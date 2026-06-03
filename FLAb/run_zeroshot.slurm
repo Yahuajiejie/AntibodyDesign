@@ -22,6 +22,10 @@
 
 mkdir -p logs
 
+source activate esm2
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+export PYTHONIOENCODING=utf-8
+
 echo "========================================"
 echo "Job ID:    $SLURM_JOB_ID"
 echo "Node:      $SLURM_NODELIST"

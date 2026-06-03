@@ -29,16 +29,21 @@ echo "Start:     $(date)"
 echo "GPU:       $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "========================================"
 
-# 激活 conda 环境（根据你的环境名修改）
-# conda activate flab
-# 或者用 module：
-# module load cuda/12.1 python/3.10
+# 激活 conda 环境
+source activate esm2
 
-# 切换到项目目录（根据实际路径修改）
+# 切换到项目目录
 cd $SLURM_SUBMIT_DIR
 
-# 确认 GPU 可用
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
+# 关键修复：让 conda 的 libstdc++ 优先于系统的
+# 解决 GLIBCXX_3.4.29 not found 问题
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+export PYTHONIOENCODING=utf-8    # 防止中文日志乱码
+
+# 确认环境正常（不调用 get_device_name，避免 CUDA 版本不匹配崩溃）
+python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
+python -c "import pandas; print(f'pandas: {pandas.__version__}')"
+echo "data/binding 文件数: $(ls data/binding/*.csv 2>/dev/null | wc -l) 个 CSV"
 
 # ── 步骤1：提取 ESM2 Embedding（约 15~30 分钟）─────────────────────
 echo ""
