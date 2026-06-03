@@ -15,7 +15,7 @@
 #SBATCH --mem=32G                      # 32GB 内存（ESM2-650M + 数据集）
 #SBATCH --gres=gpu:a800:1             # 1 张 A800（ESM2-650M 只需 ~5GB 显存）
 #SBATCH --time=02:00:00               # 申请 2 小时（实际跑 ~30 分钟，留 buffer）
-#SBATCH --partition=gpu               # 根据你的集群修改分区名
+#SBATCH --partition=GPUA800              # 根据你的集群修改分区名
 #SBATCH --output=logs/train_%j.log    # 标准输出写入文件（%j = job id）
 #SBATCH --error=logs/train_%j.log     # 错误输出同一文件
 

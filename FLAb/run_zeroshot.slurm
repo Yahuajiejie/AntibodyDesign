@@ -16,7 +16,7 @@
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:a800:1             # 1 张 A800 够用
 #SBATCH --time=08:00:00               # 申请 8 小时（实际约 5-6 小时）
-#SBATCH --partition=gpu               # 根据你的集群修改
+#SBATCH --partition=GPUA800            # 根据你的集群修改
 #SBATCH --output=logs/zeroshot_%j.log
 #SBATCH --error=logs/zeroshot_%j.log
 
