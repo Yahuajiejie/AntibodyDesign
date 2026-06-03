@@ -26,10 +26,13 @@ class Config:
     BATCH_SIZE   = 32     # 每批次样本对数
     MARGIN       = 0.1    # Pairwise hinge loss 的 margin
     WEIGHT_DECAY = 1e-4   # L2 正则化系数
+    MAX_PAIRS    = 10000  # 每个 benchmark 最多使用的训练对数量
+                          # 防止大数据集 O(N²) 爆炸（3000条序列→900万对→改为1万对）
 
     # ── 数据集过滤 ──────────────────────────────────────────────────────────────
     MAX_DATASET_SIZE = 5000  # 超过此行数的数据集跳过（多为预测值，非实验 Kd）
-    MIN_DATASET_SIZE = 10    # 少于此行数无法有效划分 train/val/test
+    MIN_DATASET_SIZE = 30    # 少于此行数无法有效划分 train/val/test
+                              # 30条 → train≈24, val≈3, test≈3，最低保证 val/test 各有3条
 
     # ── 划分比例 ───────────────────────────────────────────────────────────────
     TRAIN_RATIO = 0.8   # 80% 训练集

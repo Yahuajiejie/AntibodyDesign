@@ -135,7 +135,7 @@ def train_one_benchmark(
 
     # ── 构建 Dataset ───────────────────────────────────────────────────────────
     # 训练集：构造所有亲和力有高低关系的序列对
-    train_dataset = PairwiseRankingDataset(train_df)
+    train_dataset = PairwiseRankingDataset(train_df, max_pairs=cfg.MAX_PAIRS)
     # 验证集/测试集：逐条评分，计算 Spearman
     val_dataset   = ScoringDataset(val_df)
     test_dataset  = ScoringDataset(test_df)

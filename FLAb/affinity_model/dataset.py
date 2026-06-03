@@ -27,32 +27,47 @@ class PairwiseRankingDataset(Dataset):
       实际对数 = 满足 fitness_i > fitness_j 的 (i,j) 数量。
     """
 
-    def __init__(self, df):
+    def __init__(self, df, max_pairs: int = 10000):
         """
         参数：
-          df: 含 'embedding'（numpy array）和 'fitness'（float）列的 DataFrame
+          df:        含 'embedding' 和 'fitness' 列的 DataFrame
+          max_pairs: 最多使用的训练对数量。
+                     N 条序列理论上有 N*(N-1)/2 个对，
+                     对大数据集（N>200）会爆炸到百万级，
+                     随机采样 max_pairs 个对，保持训练效率。
         """
-        # 将所有 embedding 堆叠成矩阵，形状 [N, 1280]
         embeddings = np.stack(df["embedding"].values).astype(np.float32)
         fitness    = df["fitness"].values.astype(np.float32)
-
         N = len(df)
-        # 存储 (emb_正样本, emb_负样本, fitness_正, fitness_负)
-        # Hinge/RankNet 只用前两个，MSE 需要全部四个
-        self.pairs = []
 
-        # 枚举所有有序对 (i, j)，i 的亲和力高于 j
-        for i in range(N):
-            for j in range(N):
-                if i != j and fitness[i] > fitness[j]:
-                    self.pairs.append((
-                        embeddings[i],        # 正样本 embedding
-                        embeddings[j],        # 负样本 embedding
-                        np.float32(fitness[i]),  # 正样本真实 fitness（MSE 需要）
-                        np.float32(fitness[j]),  # 负样本真实 fitness（MSE 需要）
-                    ))
+        # 先把所有合法的 (i, j) 索引对找出来（只存索引，不存 embedding，省内存）
+        # fitness[i] > fitness[j] 的有序对才是正负样本对
+        valid_pairs = [
+            (i, j)
+            for i in range(N)
+            for j in range(N)
+            if i != j and fitness[i] > fitness[j]
+        ]
 
-        print(f"  [PairwiseDataset] {N} 条序列 → {len(self.pairs)} 个训练对")
+        # 如果对数超过 max_pairs，随机采样；否则全部使用
+        if len(valid_pairs) > max_pairs:
+            rng = np.random.default_rng(42)
+            indices = rng.choice(len(valid_pairs), size=max_pairs, replace=False)
+            valid_pairs = [valid_pairs[k] for k in indices]
+
+        # 根据采样后的索引构造实际数据
+        self.pairs = [
+            (
+                embeddings[i],
+                embeddings[j],
+                np.float32(fitness[i]),
+                np.float32(fitness[j]),
+            )
+            for i, j in valid_pairs
+        ]
+
+        print(f"  [PairwiseDataset] {N} 条序列 → {len(self.pairs)} 个训练对"
+              + (f"（从 {N*(N-1)//2:,} 个中随机采样）" if N*(N-1)//2 > max_pairs else ""))
 
     def __len__(self):
         return len(self.pairs)
