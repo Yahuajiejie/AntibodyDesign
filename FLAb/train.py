@@ -6,7 +6,7 @@ train.py — 主入口脚本
   # 步骤1：提取所有序列的 ESM2 embedding 并缓存到磁盘（只需跑一次，耗时）
   python train.py --mode embed
 
-  # 步骤2：从缓存读取 embedding，训练 MLP head，评估 Spearman
+  # 步骤2：从缓存读取 embedding，训练共享 MLP head，按组评估 Spearman
   python train.py --mode train
 
   # 一键全流程（embed + train）
@@ -24,7 +24,7 @@ from affinity_model.config import cfg
 from affinity_model.data_loader import load_all_datasets
 from affinity_model.embeddings import embed_all_datasets, load_cached_datasets
 from affinity_model.losses import LOSS_REGISTRY
-from affinity_model.trainer import run_all_benchmarks
+from affinity_model.trainer import run_global_training
 
 
 def set_seed(seed: int = cfg.SEED):
@@ -39,7 +39,7 @@ def set_seed(seed: int = cfg.SEED):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FLAb 抗体亲和力预测模型训练"
+        description="FLAb 通用抗体亲和力排序模型训练"
     )
     parser.add_argument(
         "--mode",
@@ -99,17 +99,16 @@ def main():
             # train-only 模式：直接从磁盘读取之前缓存的 embedded_datasets
             embedded_datasets = load_cached_datasets(args.cache_dir)
 
-        # 遍历所有 benchmark，依次训练并评估（每种 loss 各跑一遍）
-        results_df = run_all_benchmarks(
+        # 每种 loss 各训练一个全局共享模型，不再为每个 benchmark 单独建 head
+        results_df = run_global_training(
             embedded_datasets,
             args.output_dir,
             loss_names=args.loss,
         )
 
-        # 打印前几行结果，方便快速查看
-        print("\n[前10名 benchmark（按 test Spearman 排序）]")
-        top = results_df.sort_values("spearman_test", ascending=False).head(10)
-        print(top[["name", "n", "spearman_test"]].to_string(index=False))
+        print("\n[全局模型结果]")
+        cols = ["loss", "val_mean_spearman", "test_mean_spearman", "test_n_groups"]
+        print(results_df[cols].to_string(index=False))
 
 
 if __name__ == "__main__":

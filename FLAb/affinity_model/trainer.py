@@ -1,312 +1,415 @@
 """
-trainer.py — 训练循环与评估
+trainer.py — 通用亲和力排序模型训练与评估
 
-包含：
-  - split_dataset()：按 80/10/10 划分 train/val/test
-  - evaluate_spearman()：在给定数据集上计算 Spearman 相关系数
-  - train_one_benchmark()：对单个 benchmark 完整训练 + 评估流程
-  - run_all_benchmarks()：遍历所有 benchmark，汇总结果
+当前版本不再为每个 benchmark 单独训练任务头，而是：
+
+  1. 将所有合格的 Kd 数据集合并成一个训练表；
+  2. 按 compatible_group 整组划分 train/val/test；
+  3. 使用一个共享 AffinityMLP head 训练；
+  4. 评估时仍按 compatible_group 分别计算 Spearman，再汇总。
+
+这样可以避免旧实现中的两个核心问题：
+  - 测试集和训练集来自同一 benchmark，分数虚高；
+  - 不同 assay/单位/抗原之间被当成同一个绝对回归任务。
 """
 
+from __future__ import annotations
+
 import os
+
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
 from scipy.stats import spearmanr
-from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
 
 from .config import cfg
-from .dataset import PairwiseRankingDataset, ScoringDataset
-from .model import AffinityMLP
+from .dataset import PairwiseRankingDataset, PointwiseRegressionDataset, ScoringDataset
 from .losses import LOSS_REGISTRY
+from .model import AffinityMLP
 
 
-def split_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def flatten_datasets(embedded_datasets: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
-    将一个 benchmark 的数据按 80/10/10 划分为 train/val/test。
+    将 embed_all_datasets() 返回的 dict 拼成一个总表。
 
-    策略：
-      - 优先使用分层划分（stratify），保证三个集合的 fitness 分布均匀
-      - 数据太少时退回到随机划分（分层划分需要足够的类别多样性）
+    输入：
+      embedded_datasets:
+        key = 数据集名，value = 含 embedding/label/compatible_group 的 DataFrame
 
-    参数：
-      df: 含 embedding 和 fitness 列的 DataFrame
+    输出：
+      一个 DataFrame，每行是一条抗体序列。
+
+    这里不会改变标签，也不会合并 compatible_group；只是把训练需要的
+    多个 CSV 纵向拼接，方便全局模型一次性训练。
+    """
+    frames = []
+    for name, df in embedded_datasets.items():
+        piece = df.copy()
+        if "dataset" not in piece.columns:
+            piece["dataset"] = name
+        if cfg.GROUP_COL not in piece.columns:
+            piece[cfg.GROUP_COL] = name
+        frames.append(piece)
+
+    if not frames:
+        raise ValueError("embedded_datasets 为空，无法训练")
+
+    all_df = pd.concat(frames, ignore_index=True)
+    required = ["embedding", cfg.RANK_LABEL_COL, cfg.MSE_LABEL_COL, cfg.GROUP_COL]
+    missing = [col for col in required if col not in all_df.columns]
+    if missing:
+        raise ValueError(f"训练数据缺少必要列: {missing}")
+
+    all_df = all_df.dropna(subset=[cfg.RANK_LABEL_COL, cfg.MSE_LABEL_COL]).reset_index(drop=True)
+    print(
+        f"\n[训练数据] {len(all_df):,} 条序列，"
+        f"{all_df[cfg.GROUP_COL].nunique()} 个 compatible_group"
+    )
+    return all_df
+
+
+def split_by_group(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    按 compatible_group 整组划分 train/val/test。
+
+    为什么不用随机行划分：
+      随机行划分会让同一个 benchmark 的相近突变体同时出现在训练和测试中，
+      容易得到不真实的高 Spearman。按组划分更接近“未知数据集/未知抗原”
+      的泛化场景。
+    """
+    group_names = np.array(sorted(df[cfg.GROUP_COL].astype(str).unique()))
+    if len(group_names) < 3:
+        raise ValueError("compatible_group 少于 3 个，无法按组划分 train/val/test")
+
+    rng = np.random.default_rng(cfg.SEED)
+    rng.shuffle(group_names)
+
+    n_groups = len(group_names)
+    n_test = max(1, int(round(n_groups * cfg.TEST_RATIO)))
+    n_val = max(1, int(round(n_groups * cfg.VAL_RATIO)))
+    if n_val + n_test >= n_groups:
+        n_val = 1
+        n_test = 1
+
+    test_groups = set(group_names[:n_test])
+    val_groups = set(group_names[n_test:n_test + n_val])
+    train_groups = set(group_names[n_test + n_val:])
+
+    train_df = df[df[cfg.GROUP_COL].astype(str).isin(train_groups)].reset_index(drop=True)
+    val_df = df[df[cfg.GROUP_COL].astype(str).isin(val_groups)].reset_index(drop=True)
+    test_df = df[df[cfg.GROUP_COL].astype(str).isin(test_groups)].reset_index(drop=True)
+
+    print(
+        "[划分] "
+        f"train={len(train_df):,} 条/{len(train_groups)} 组，"
+        f"val={len(val_df):,} 条/{len(val_groups)} 组，"
+        f"test={len(test_df):,} 条/{len(test_groups)} 组"
+    )
+    return train_df, val_df, test_df
+
+
+def _predict_scores(model: AffinityMLP, df: pd.DataFrame) -> np.ndarray:
+    """
+    对 DataFrame 中每条序列推理，返回模型分数数组。
+
+    DataLoader 是 PyTorch 的批处理工具；shuffle=False 保证输出顺序
+    与 df 行顺序一致，后续才能把分数安全地写回 DataFrame。
+    """
+    model.eval()
+    dataset = ScoringDataset(df, label_col=cfg.RANK_LABEL_COL)
+    loader = DataLoader(dataset, batch_size=cfg.EVAL_BATCH_SIZE, shuffle=False)
+
+    scores = []
+    with torch.no_grad():
+        for emb, _ in loader:
+            pred = model(emb.to(cfg.DEVICE)).squeeze(-1)
+            scores.extend(pred.cpu().numpy().tolist())
+    return np.asarray(scores, dtype=np.float32)
+
+
+def evaluate_by_group(
+    model: AffinityMLP,
+    df: pd.DataFrame,
+    split_name: str,
+) -> tuple[dict, pd.DataFrame]:
+    """
+    按 compatible_group 计算 Spearman，并汇总为整体指标。
 
     返回：
-      (train_df, val_df, test_df) 三元组
+      summary:
+        mean_spearman / median_spearman / weighted_mean_spearman / n_groups
+      detail_df:
+        每个 compatible_group 一行，便于质检哪些数据集表现好/差。
     """
-    try:
-        # 对 fitness 值分桶（最多 5 桶），用于分层划分
-        n_bins = min(5, len(df) // 3)
-        bins = pd.qcut(df["fitness"], q=n_bins, labels=False, duplicates="drop")
+    if len(df) == 0:
+        empty = pd.DataFrame()
+        return {
+            f"{split_name}_mean_spearman": float("nan"),
+            f"{split_name}_median_spearman": float("nan"),
+            f"{split_name}_weighted_spearman": float("nan"),
+            f"{split_name}_n_groups": 0,
+        }, empty
 
-        # 第一次划分：80% train，20% temp
-        train_df, temp_df = train_test_split(
-            df, test_size=(1 - cfg.TRAIN_RATIO),
-            stratify=bins, random_state=cfg.SEED
-        )
-        # 第二次划分：temp 对半分为 val 和 test
-        temp_bins = pd.qcut(temp_df["fitness"], q=min(3, len(temp_df) // 2),
-                            labels=False, duplicates="drop")
-        val_df, test_df = train_test_split(
-            temp_df, test_size=0.5,
-            stratify=temp_bins, random_state=cfg.SEED
-        )
-    except Exception:
-        # 分层划分失败（数据量太少或 fitness 值不够多样）→ 退回随机划分
-        train_df, temp_df = train_test_split(
-            df, test_size=(1 - cfg.TRAIN_RATIO), random_state=cfg.SEED
-        )
-        val_df, test_df = train_test_split(
-            temp_df, test_size=0.5, random_state=cfg.SEED
-        )
+    scored = df.copy()
+    scored["prediction"] = _predict_scores(model, scored)
 
-    # 重置 index，避免后续操作因 index 不连续而出错
-    return (
-        train_df.reset_index(drop=True),
-        val_df.reset_index(drop=True),
-        test_df.reset_index(drop=True),
+    records = []
+    for group_name, group_df in scored.groupby(cfg.GROUP_COL):
+        n = len(group_df)
+        n_unique = group_df[cfg.RANK_LABEL_COL].nunique()
+        if n < cfg.MIN_GROUP_SIZE or n_unique < 2:
+            continue
+
+        corr, p_value = spearmanr(
+            group_df["prediction"].values,
+            group_df[cfg.RANK_LABEL_COL].values,
+        )
+        if np.isnan(corr):
+            continue
+
+        records.append({
+            "split": split_name,
+            "compatible_group": group_name,
+            "dataset": group_df["dataset"].iloc[0] if "dataset" in group_df else group_name,
+            "n": n,
+            "n_unique_label": int(n_unique),
+            "spearman": float(corr),
+            "p_value": float(p_value),
+            "assay_family": group_df["assay_family"].iloc[0] if "assay_family" in group_df else "",
+            "assay_units": group_df["assay_units"].iloc[0] if "assay_units" in group_df else "",
+        })
+
+    detail_df = pd.DataFrame(records)
+    if detail_df.empty:
+        summary = {
+            f"{split_name}_mean_spearman": float("nan"),
+            f"{split_name}_median_spearman": float("nan"),
+            f"{split_name}_weighted_spearman": float("nan"),
+            f"{split_name}_n_groups": 0,
+        }
+        return summary, detail_df
+
+    summary = {
+        f"{split_name}_mean_spearman": float(detail_df["spearman"].mean()),
+        f"{split_name}_median_spearman": float(detail_df["spearman"].median()),
+        f"{split_name}_weighted_spearman": float(
+            np.average(detail_df["spearman"], weights=detail_df["n"])
+        ),
+        f"{split_name}_n_groups": int(len(detail_df)),
+    }
+    return summary, detail_df
+
+
+def _build_train_loader(train_df: pd.DataFrame, loss_name: str) -> tuple[DataLoader, nn.Module]:
+    """
+    根据 loss_name 构造训练 Dataset 和损失函数。
+
+    RankNet/Hinge:
+      使用 PairwiseRankingDataset，batch 中每条样本是一对抗体。
+
+    MSE:
+      使用 PointwiseRegressionDataset，batch 中每条样本是一条抗体，
+      target 是 label_z。
+    """
+    loss_cls = LOSS_REGISTRY[loss_name]
+
+    if loss_name == "mse":
+        dataset = PointwiseRegressionDataset(train_df, target_col=cfg.MSE_LABEL_COL)
+        loss_fn = loss_cls()
+    else:
+        dataset = PairwiseRankingDataset(
+            train_df,
+            label_col=cfg.RANK_LABEL_COL,
+            group_col=cfg.GROUP_COL,
+            max_pairs_per_group=cfg.MAX_PAIRS_PER_GROUP,
+            min_label_diff=cfg.MIN_LABEL_DIFF,
+            seed=cfg.SEED,
+        )
+        loss_fn = loss_cls(margin=cfg.MARGIN) if loss_name == "hinge" else loss_cls()
+
+    if len(dataset) == 0:
+        raise ValueError(f"{loss_name} 训练集为空，无法训练")
+
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.BATCH_SIZE,
+        shuffle=True,
+        drop_last=False,
     )
+    return loader, loss_fn
 
 
-def evaluate_spearman(model: AffinityMLP, dataset: ScoringDataset) -> float:
-    """
-    在给定数据集上计算模型预测分数与真实 fitness 的 Spearman 相关系数。
-
-    步骤：
-      1. 对每条序列做 forward pass，得到预测分数
-      2. 将预测分数和真实 fitness 一起计算 Spearman
-
-    Spearman 范围 [-1, 1]，越接近 1 表示排序越准确。
-    """
-    model.eval()  # 关闭 Dropout，进入推理模式
-
-    all_scores  = []  # 模型输出的亲和力分数
-    all_fitness = []  # 真实的 fitness 标签
-
-    # 用较大的 batch size 加速推理（不需要保存梯度，显存压力小）
-    loader = DataLoader(dataset, batch_size=256, shuffle=False)
-
-    with torch.no_grad():
-        for emb, fit in loader:
-            # forward pass，得到每条序列的分数
-            scores = model(emb.to(cfg.DEVICE)).squeeze(-1)  # [batch]
-            all_scores.extend(scores.cpu().numpy().tolist())
-            all_fitness.extend(fit.numpy().tolist())
-
-    # fitness 值全部相同时 Spearman 无意义（无法排序）
-    if len(set(all_fitness)) < 2:
-        return float("nan")
-
-    # 计算 Spearman 相关系数（只取 corr，不取 p_value）
-    corr, _ = spearmanr(all_scores, all_fitness)
-    return float(corr)
-
-
-def train_one_benchmark(
-    name: str,
-    df: pd.DataFrame,
+def train_global_model(
+    embedded_datasets: dict[str, pd.DataFrame],
     output_dir: str,
     loss_name: str = "ranknet",
 ) -> dict:
     """
-    对单个 benchmark 完整执行训练 + 评估流程，并保存模型。
+    训练一个跨数据集共享参数的通用模型。
 
-    Per-benchmark 训练的含义：
-      每个 benchmark 代表同一个抗原的不同抗体变体，为其训练一个专属的小模型。
-      这样模型可以专门学习该抗原-抗体系统的亲和力规律，而不是跨系统泛化。
-
-    参数：
-      name:       数据集名称（用于日志输出和文件命名）
-      df:         含 embedding 和 fitness 列的 DataFrame
-      output_dir: 模型权重保存路径
-
-    返回：
-      包含 spearman_test 等指标的 dict，用于后续汇总
+    每个 loss_name 会独立训练一个模型，便于做 RankNet/Hinge/MSE 消融。
     """
-    print(f"\n{'─'*55}")
-    print(f"[训练] {name}  ({len(df)} 条序列)  loss={loss_name}")
+    print(f"\n{'═' * 70}")
+    print(f"[全局训练] loss={loss_name}")
+    print(f"{'═' * 70}")
 
-    # ── 划分数据集 ─────────────────────────────────────────────────────────────
-    train_df, val_df, test_df = split_dataset(df)
-    print(f"  划分: train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
+    all_df = flatten_datasets(embedded_datasets)
+    train_df, val_df, test_df = split_by_group(all_df)
 
-    # ── 构建 Dataset ───────────────────────────────────────────────────────────
-    # 训练集：构造所有亲和力有高低关系的序列对
-    train_dataset = PairwiseRankingDataset(train_df, max_pairs=cfg.MAX_PAIRS)
-    # 验证集/测试集：逐条评分，计算 Spearman
-    val_dataset   = ScoringDataset(val_df)
-    test_dataset  = ScoringDataset(test_df)
+    train_loader, loss_fn = _build_train_loader(train_df, loss_name)
 
-    if len(train_dataset) == 0:
-        # 训练集所有序列 fitness 相同，无法构造正负对
-        print(f"  [SKIP] 无法构造训练对（fitness 值无差异）")
-        return {"name": name, "n": len(df), "spearman_test": float("nan")}
-
-    # 构建 DataLoader，每轮打乱顺序
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=cfg.BATCH_SIZE,
-        shuffle=True,      # 每 epoch 打乱，避免模型记住顺序
-        drop_last=False,   # 保留最后不完整的 batch
-    )
-
-    # ── 初始化模型、优化器、调度器、损失函数 ──────────────────────────────────
-    # 每个 benchmark 的模型从零开始训练（不共享参数）
-    model     = AffinityMLP().to(cfg.DEVICE)
+    model = AffinityMLP().to(cfg.DEVICE)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.LR,
-        weight_decay=cfg.WEIGHT_DECAY,  # L2 正则化
+        weight_decay=cfg.WEIGHT_DECAY,
     )
-    # 余弦退火：训练后期平滑降低学习率，帮助收敛到更好的极小值
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=cfg.EPOCHS
-    )
-    # 从注册表实例化损失函数（mse / hinge / ranknet）
-    loss_cls = LOSS_REGISTRY[loss_name]
-    loss_fn  = loss_cls() if loss_name != "hinge" else loss_cls(margin=cfg.MARGIN)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.EPOCHS)
 
-    # ── 训练循环 ───────────────────────────────────────────────────────────────
-    best_val_spearman = -float("inf")  # 记录验证集最优 Spearman
-    best_state        = None           # 保存对应的模型参数
+    best_state = None
+    best_val = -float("inf")
+    best_epoch = 0
 
     for epoch in range(1, cfg.EPOCHS + 1):
-        # 切换到训练模式（Dropout 生效）
         model.train()
         total_loss = 0.0
-        n_batches  = 0
+        n_batches = 0
 
-        for emb_pos, emb_neg, fit_pos, fit_neg in train_loader:
-            # 数据移到 GPU
-            emb_pos  = emb_pos.to(cfg.DEVICE)
-            emb_neg  = emb_neg.to(cfg.DEVICE)
-            # fitness 值移到 GPU（MSE 需要；Hinge/RankNet 传入但不使用）
-            fit_pos  = fit_pos.unsqueeze(-1).to(cfg.DEVICE)  # [batch, 1]
-            fit_neg  = fit_neg.unsqueeze(-1).to(cfg.DEVICE)  # [batch, 1]
-
-            # 清空上一步积累的梯度
+        for batch in train_loader:
             optimizer.zero_grad()
 
-            # 正向传播：分别对正负样本打分
-            score_pos = model(emb_pos)  # [batch, 1]
-            score_neg = model(emb_neg)  # [batch, 1]
+            if loss_name == "mse":
+                emb, target = batch
+                emb = emb.to(cfg.DEVICE)
+                target = target.unsqueeze(-1).to(cfg.DEVICE)
+                score = model(emb)
+                loss = loss_fn(score, target)
+            else:
+                emb_pos, emb_neg, fit_pos, fit_neg = batch
+                emb_pos = emb_pos.to(cfg.DEVICE)
+                emb_neg = emb_neg.to(cfg.DEVICE)
+                fit_pos = fit_pos.unsqueeze(-1).to(cfg.DEVICE)
+                fit_neg = fit_neg.unsqueeze(-1).to(cfg.DEVICE)
 
-            # 计算损失（三种 loss 的接口统一：score_pos, score_neg, fit_pos, fit_neg）
-            loss = loss_fn(score_pos, score_neg, fit_pos, fit_neg)
+                score_pos = model(emb_pos)
+                score_neg = model(emb_neg)
+                loss = loss_fn(score_pos, score_neg, fit_pos, fit_neg)
 
-            # 反向传播：计算各参数的梯度
             loss.backward()
-
-            # 梯度裁剪：防止小数据集上的梯度爆炸
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            # 更新参数
             optimizer.step()
 
-            total_loss += loss.item()
-            n_batches  += 1
+            total_loss += float(loss.item())
+            n_batches += 1
 
-        # 更新学习率（每 epoch 调用一次）
         scheduler.step()
 
-        # 每 10 个 epoch 在验证集上评估一次，并保存最优模型
-        if epoch % 10 == 0:
-            val_spearman = evaluate_spearman(model, val_dataset)
-            avg_loss     = total_loss / max(n_batches, 1)
-            print(f"  Epoch {epoch:3d}/{cfg.EPOCHS}  "
-                  f"loss={avg_loss:.4f}  val_spearman={val_spearman:.4f}")
+        if epoch % cfg.EVAL_EVERY == 0 or epoch == cfg.EPOCHS:
+            val_summary, _ = evaluate_by_group(model, val_df, "val")
+            val_score = val_summary["val_mean_spearman"]
+            avg_loss = total_loss / max(n_batches, 1)
+            print(
+                f"  Epoch {epoch:3d}/{cfg.EPOCHS} "
+                f"loss={avg_loss:.4f} val_mean_spearman={val_score:.4f}"
+            )
 
-            # 如果验证集 Spearman 创历史新高，保存当前参数
-            if not np.isnan(val_spearman) and val_spearman > best_val_spearman:
-                best_val_spearman = val_spearman
-                # clone() 深拷贝，避免后续训练覆盖已保存的最优参数
-                best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            if not np.isnan(val_score) and val_score > best_val:
+                best_val = val_score
+                best_epoch = epoch
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                }
 
-    # ── 在测试集上最终评估 ──────────────────────────────────────────────────────
     if best_state is not None:
-        # 恢复验证集表现最好的那个 checkpoint
         model.load_state_dict(best_state)
 
-    test_spearman = evaluate_spearman(model, test_dataset)
-    print(f"  ✓ test_spearman = {test_spearman:.4f}")
+    val_summary, val_detail = evaluate_by_group(model, val_df, "val")
+    test_summary, test_detail = evaluate_by_group(model, test_df, "test")
 
-    # ── 保存模型 ──────────────────────────────────────────────────────────────
     os.makedirs(output_dir, exist_ok=True)
-    save_path = os.path.join(output_dir, f"{name}_{loss_name}.pt")
+    model_path = os.path.join(output_dir, f"global_{loss_name}.pt")
     torch.save({
-        "model_state":    best_state or model.state_dict(),
-        "val_spearman":   best_val_spearman,
-        "test_spearman":  test_spearman,
-        # 同时保存超参，方便后续推理时重建模型
+        "model_state": best_state or model.state_dict(),
+        "loss": loss_name,
+        "best_epoch": best_epoch,
+        "best_val_mean_spearman": best_val,
         "hyperparams": {
-            "input_dim":  cfg.ESM_EMBEDDING_DIM,
+            "input_dim": cfg.ESM_EMBEDDING_DIM,
             "hidden_dim": cfg.HIDDEN_DIM,
-            "dropout":    cfg.DROPOUT,
+            "dropout": cfg.DROPOUT,
+            "label_col": cfg.RANK_LABEL_COL,
+            "mse_label_col": cfg.MSE_LABEL_COL,
+            "group_col": cfg.GROUP_COL,
         },
-    }, save_path)
+        "split_groups": {
+            "train": sorted(train_df[cfg.GROUP_COL].astype(str).unique().tolist()),
+            "val": sorted(val_df[cfg.GROUP_COL].astype(str).unique().tolist()),
+            "test": sorted(test_df[cfg.GROUP_COL].astype(str).unique().tolist()),
+        },
+    }, model_path)
 
-    return {
-        "name":           name,
-        "loss":           loss_name,
-        "n":              len(df),
-        "n_train":        len(train_df),
-        "n_test":         len(test_df),
-        "val_spearman":   best_val_spearman,
-        "spearman_test":  test_spearman,
+    val_detail_path = os.path.join(output_dir, f"global_{loss_name}_val_by_group.csv")
+    test_detail_path = os.path.join(output_dir, f"global_{loss_name}_test_by_group.csv")
+    val_detail.to_csv(val_detail_path, index=False)
+    test_detail.to_csv(test_detail_path, index=False)
+
+    result = {
+        "loss": loss_name,
+        "n_train": len(train_df),
+        "n_val": len(val_df),
+        "n_test": len(test_df),
+        "n_train_groups": train_df[cfg.GROUP_COL].nunique(),
+        "n_val_groups": val_df[cfg.GROUP_COL].nunique(),
+        "n_test_groups": test_df[cfg.GROUP_COL].nunique(),
+        "best_epoch": best_epoch,
+        **val_summary,
+        **test_summary,
+        "model_path": model_path,
     }
 
+    print(
+        f"[完成] loss={loss_name} "
+        f"val_mean={result['val_mean_spearman']:.4f} "
+        f"test_mean={result['test_mean_spearman']:.4f} "
+        f"model={model_path}"
+    )
+    return result
 
-def run_all_benchmarks(
-    embedded_datasets: dict,
+
+def run_global_training(
+    embedded_datasets: dict[str, pd.DataFrame],
     output_dir: str,
-    loss_names: list[str] = None,
+    loss_names: list[str] | None = None,
 ) -> pd.DataFrame:
     """
-    遍历所有 benchmark，依次训练并评估，汇总结果为 DataFrame。
-
-    参数：
-      embedded_datasets: dict，key = 数据集名，value = 含 embedding 列的 DataFrame
-      output_dir:        模型和 summary.csv 的保存目录
-
-    返回：
-      results_df: 每行是一个 benchmark 的评估结果
+    对多个 loss 依次训练全局模型，并保存汇总表。
     """
-    # 默认跑全部三种损失函数
     if loss_names is None:
-        loss_names = list(LOSS_REGISTRY.keys())  # ["mse", "hinge", "ranknet"]
+        loss_names = list(LOSS_REGISTRY.keys())
 
-    all_results = []
-
-    # 外层循环：损失函数；内层循环：每个 benchmark
-    # 这样同一个 benchmark 的三种 loss 结果都会出现在 summary 里，方便横向对比
+    results = []
     for loss_name in loss_names:
-        loss_dir = os.path.join(output_dir, loss_name)  # 每种 loss 单独存一个子目录
-        print(f"\n{'═'*55}")
-        print(f"  损失函数: {loss_name.upper()}")
-        print(f"{'═'*55}")
+        results.append(train_global_model(embedded_datasets, output_dir, loss_name))
 
-        for name, df in embedded_datasets.items():
-            result = train_one_benchmark(name, df, loss_dir, loss_name=loss_name)
-            all_results.append(result)
-
-    results_df = pd.DataFrame(all_results)
-
-    # 保存完整汇总
+    results_df = pd.DataFrame(results)
     os.makedirs(output_dir, exist_ok=True)
-    summary_path = os.path.join(output_dir, "summary_all_losses.csv")
+    summary_path = os.path.join(output_dir, "summary_global_losses.csv")
     results_df.to_csv(summary_path, index=False)
 
-    # 按损失函数分组打印对比
-    print(f"\n{'═'*55}")
-    print("[消融实验汇总] 各损失函数的平均 Spearman（test）")
-    print(f"{'─'*35}")
-    for loss_name, grp in results_df.groupby("loss"):
-        valid = grp["spearman_test"].dropna()
-        print(f"  {loss_name:10s}  mean={valid.mean():.4f}  median={valid.median():.4f}  n={len(valid)}")
-    print(f"{'─'*35}")
-    print(f"  结果已保存: {summary_path}")
-
+    print(f"\n[汇总] 全局模型结果已保存: {summary_path}")
+    cols = [
+        "loss",
+        "val_mean_spearman",
+        "test_mean_spearman",
+        "test_median_spearman",
+        "test_n_groups",
+    ]
+    print(results_df[cols].to_string(index=False))
     return results_df
+
+
+# 向后兼容旧入口名；语义已经从 per-benchmark 改为 global training。
+run_all_benchmarks = run_global_training

@@ -85,24 +85,29 @@ nohup python run_scoring_batch.py --model esm2_650M esm2_3B > log_scoring.txt 2>
 
 ### 5. 有监督训练框架
 
-`train_affinity_model.py`：ESM2 + MLP + Pairwise Ranking Loss 完整训练脚本。
+`FLAb/train.py`：ESM2 + 共享 MLP head + Pairwise Ranking Loss / MSE 的完整训练脚本。
 
 核心设计：
 - **Backbone**：ESM2-650M（冻结），提取 per-protein mean pooling embedding（1280维）
-- **Head**：MLP（1280→256→1），GELU 激活 + Dropout(0.2)
-- **Loss**：Pairwise Hinge Ranking Loss（直接优化排序，与 Spearman 评分对齐）
-- **训练范式**：Per-benchmark fine-tuning（80/10/10 划分），每个数据集训练独立 head
+- **Head**：一个跨数据集共享的 MLP（1280→256→1），GELU 激活 + Dropout(0.2)
+- **Loss**：RankNet / Pairwise Hinge Ranking Loss（直接优化排序，与 Spearman 评分对齐），同时保留 MSE baseline
+- **训练范式**：Global training。所有合格 Kd 数据共同训练一个共享 head，不再为每个数据集单独训练任务头
+- **数据约束**：默认只使用真实 Kd 类数据；跳过 predicted Kd、bind/no bind、IC50、EC50、ADCC 等语义不同的标签
+- **Pair 构造**：只在同一个 `compatible_group` 内构造排序对，避免跨抗原、跨 assay、跨单位强行比较
+- **MSE 标签**：MSE 回归组内标准化 `label_z`，不直接回归原始 Kd / -logKd
+- **评估方式**：按 `compatible_group` 整组划分 train/val/test，并按组计算 Spearman 后汇总
 - **缓存机制**：ESM2 embedding 缓存到磁盘（只算一次，后续训练直接读取）
 
 ```bash
 # 步骤1：提取并缓存所有 embedding（只需跑一次，GPU 密集）
-python train_affinity_model.py --mode embed
+cd FLAb
+python train.py --mode embed
 
 # 步骤2：训练 + 评估（从缓存读 embedding，CPU/GPU 均可）
-python train_affinity_model.py --mode train
+python train.py --mode train
 
 # 一键全流程
-nohup python train_affinity_model.py --mode all > log_train.txt 2>&1 &
+nohup python train.py --mode all > log_train.txt 2>&1 &
 ```
 
 ---

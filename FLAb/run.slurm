@@ -57,7 +57,7 @@ python train.py --mode embed \
 
 echo "[Step 1] Embedding 完成：$(date)"
 
-# ── 步骤2：训练 MLP + 消融实验（约 2~5 分钟）─────────────────────
+# ── 步骤2：训练共享 MLP head + 消融实验（约 2~5 分钟）────────────
 echo ""
 echo "[Step 2] 开始训练（3 种损失函数消融实验）..."
 echo "时间: $(date)"
@@ -73,5 +73,5 @@ echo "[Step 2] 训练完成：$(date)"
 echo ""
 echo "========================================"
 echo "全部完成！时间: $(date)"
-echo "结果位置: results/affinity_model/summary_all_losses.csv"
+echo "结果位置: results/affinity_model/summary_global_losses.csv"
 echo "========================================"

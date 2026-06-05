@@ -8,7 +8,7 @@ losses.py — 三种亲和力排序损失函数
   3. RankNetLoss    — Bradley-Terry 模型的最大似然，假设误差服从 Gumbel 分布
 
 三种损失在优化目标上的根本区别：
-  MSE:       直接最小化预测值与真实值的差距（回归视角）
+  MSE:       直接最小化预测值与组内标准化标签的差距（回归视角）
   Hinge:     要求正样本分数比负样本高出一个固定 margin（几何视角）
   RankNet:   最大化"观测到正确排序"的对数似然（概率视角）
 """
@@ -24,19 +24,20 @@ from .config import cfg
 
 class MSELoss(nn.Module):
     """
-    均方误差损失，直接回归 fitness 绝对值。
+    均方误差损失，回归组内标准化后的 label_z。
 
     统计假设：
       预测误差 ε = score - fitness 服从正态分布 N(0, σ²)。
       最小化 MSE 等价于在高斯误差假设下做最大似然估计。
 
-    输入模式：与 Pairwise 损失不同，MSE 不需要构造序列对，
-    直接用单条序列的 (score, fitness) 对训练。
-    但为了和另外两个损失共享同一套 DataLoader（PairwiseDataset），
-    这里仍然接收 (score_pos, score_neg)，用 fitness_pos/fitness_neg 计算。
+    输入模式：
+      与 Pairwise 损失不同，MSE 不构造序列对，而是直接接收：
+        score:  [batch, 1]
+        target: [batch, 1]
 
-    注意：不同数据集的 fitness 量纲不同（有的是 -log Kd，有的是 EC50），
-    跨数据集合并训练时 MSE 会被量纲大的数据集主导，这是它的主要缺点。
+    注意：
+      target 必须是 data_loader.py 生成的 label_z，而不是原始 Kd、
+      -logKd 或 IC50。这样 MSE baseline 才不会把不同实验体系的量纲混用。
     """
 
     def __init__(self):
@@ -46,23 +47,11 @@ class MSELoss(nn.Module):
 
     def forward(
         self,
-        score_pos: torch.Tensor,    # [batch, 1]：正样本的预测分数
-        score_neg: torch.Tensor,    # [batch, 1]：负样本的预测分数
-        fitness_pos: torch.Tensor,  # [batch, 1]：正样本的真实 fitness
-        fitness_neg: torch.Tensor,  # [batch, 1]：负样本的真实 fitness
+        score: torch.Tensor,   # [batch, 1]：模型预测分数
+        target: torch.Tensor,  # [batch, 1]：组内标准化标签 label_z
     ) -> torch.Tensor:
-        """
-        对正样本和负样本分别计算 MSE，然后平均。
-
-        等价于将所有样本（不区分正负）一起回归，
-        只是这里通过 pairwise 方式传入，和其他 loss 接口统一。
-        """
-        # 正样本：预测值 vs 真实 fitness
-        loss_pos = self.mse(score_pos, fitness_pos)
-        # 负样本：预测值 vs 真实 fitness
-        loss_neg = self.mse(score_neg, fitness_neg)
-        # 两者平均作为最终损失
-        return (loss_pos + loss_neg) / 2
+        """调用 PyTorch 内置 nn.MSELoss，对 batch 取均值。"""
+        return self.mse(score, target)
 
 
 # ── 2. Pairwise Hinge Loss（成对铰链损失）──────────────────────────────────────

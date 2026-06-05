@@ -1,13 +1,13 @@
 """
-model.py — MLP 亲和力预测头
+model.py — 通用 MLP 亲和力预测头
 
-接在冻结的 ESM2 embedding 后面，输出一个亲和力分数。
-分数越高，预测的亲和力越强（Kd 越小）。
+接在冻结的 ESM2 embedding 后面，输出一个标量分数。
+分数越高，模型认为该抗体的结合亲和力越强。
 
-为什么这么浅（只有两层）：
-  - ESM2 已经提取了高质量的序列特征，MLP 只需做线性变换
-  - 每个 benchmark 通常只有几十到几百条序列，深层模型极易过拟合
-  - 浅层模型训练快、调参容易、可解释性强
+重要变化：
+  当前模型是跨数据集共享参数的通用 head，不再为每个 benchmark
+  单独创建任务头。不同实验体系的不可比性由 data_loader/dataset
+  在标签标准化和组内 pair 构造阶段处理。
 """
 
 import torch
@@ -18,13 +18,13 @@ from .config import cfg
 
 class AffinityMLP(nn.Module):
     """
-    两层 MLP 回归头。
+    两层共享 MLP 预测头。
 
     架构：
       输入 [1280] → Linear → GELU → Dropout → Linear → 输出 [1]
 
-    输入：ESM2 mean pooling embedding，维度 = cfg.ESM_EMBEDDING_DIM（默认 1280）
-    输出：单个标量分数，值越大代表预测亲和力越高
+    输入：ESM2 mean pooling embedding，维度 = cfg.ESM_EMBEDDING_DIM
+    输出：单个标量分数，值越大代表预测亲和力越强
     """
 
     def __init__(
