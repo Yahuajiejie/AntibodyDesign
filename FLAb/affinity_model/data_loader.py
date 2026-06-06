@@ -67,6 +67,12 @@ def load_metadata(metadata_path: str = cfg.METADATA_PATH) -> dict[str, dict]:
       - 是否为 predicted/binary/IC50/EC50 等需要跳过的数据；
       - 日志和文档中可追踪的实验语义。
     """
+    if not os.path.exists(metadata_path) and not os.path.isabs(metadata_path):
+        flab_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        package_relative_path = os.path.join(flab_root, metadata_path)
+        if os.path.exists(package_relative_path):
+            metadata_path = package_relative_path
+
     if not os.path.exists(metadata_path):
         print(f"[metadata] 未找到 {metadata_path}，将仅根据文件名和列名判断")
         return {}
@@ -129,7 +135,9 @@ def classify_assay(name: str, metadata_row: dict | None) -> tuple[str, str]:
         str(row.get("key_words", "")),
     ]).lower()
 
-    has_kd = bool(re.search(r"\bkd\b", text) or "k d" in text)
+    # 不用 \bkd\b，因为下划线在正则里算“单词字符”：
+    # garbinski2023_kd / rawat2022abcov_kd 这类名字会被 \b 漏掉。
+    has_kd = bool(re.search(r"(^|[^a-z0-9])kd([^a-z0-9]|$)", text) or "k d" in text)
     has_ic50 = "ic50" in text
     has_ec50 = "ec50" in text
 
