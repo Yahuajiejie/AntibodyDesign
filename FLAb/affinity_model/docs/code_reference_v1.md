@@ -1,4 +1,4 @@
-# affinity_model 代码质检文档
+# affinity_model v1 代码质检文档
 
 本文档用于人工质检 `FLAb/affinity_model` 中的通用亲和力排序模型代码。当前版本已经从旧的 `per-benchmark head` 重构为 **跨数据集共享参数的 global model**。
 
@@ -73,7 +73,7 @@ ESM_MODEL_NAME = "facebook/esm2_t33_650M_UR50D"
 ESM_EMBEDDING_DIM = 1280
 HIDDEN_DIM = 256
 DROPOUT = 0.2
-MAX_PAIRS_PER_GROUP = 10000
+MAX_PAIRS_PER_GROUP = 20000
 MIN_GROUP_SIZE = 5
 ALLOWED_ASSAY_FAMILIES = {"kd"}
 MIN_EVAL_GROUPS = 3
@@ -604,18 +604,20 @@ pd.DataFrame | None
 
 1. 把别名列重命名成 `heavy` / `light`；
 2. 必须存在 `heavy`；
-3. 双链抗体拼接为：
+3. 只强制删除 `heavy` 缺失的行；
+4. 如果某一行有有效 `light`，双链抗体拼接为：
 
 ```text
 heavy + GGGGSGGGGSGGGGS + light
 ```
 
-4. 单链 VHH 直接使用 `heavy`。
+5. 如果没有 `light` 列，或者某一行 `light` 是空值，直接使用 `heavy`。
 
 质检点：
 
 - linker 来自 `cfg.LINKER`；
 - 该拼接模拟 scFv 输入形式。
+- v2.1 中，缺 light 的行不会在 data_loader 阶段被丢掉；后续 embedding 阶段会给它们写零向量 `light_embedding`。
 
 ### `load_one_dataset(filepath, metadata)`
 

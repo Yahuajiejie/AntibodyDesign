@@ -24,6 +24,17 @@ class Config:
     MAX_SEQ_LEN      = 512            # tokenizer 最大长度，超出截断（ESM2 上限 1022）
 
     # ── MLP head ──────────────────────────────────────────────────────────────
+    MODEL_VERSION = "v2.1"
+    # v2.1 默认使用朴素 heavy/light 拼接：
+    #   chain_concat = [heavy_embedding, light_embedding]
+    # 不加入差值、乘积、attention，也不改变 RankNet/Hinge 的 pair 方向。
+    # scfv_mean 保留为消融选项，等价于 v1 的 heavy+linker+light 单序列 mean embedding。
+    MODEL_FEATURE_MODE = "chain_concat"  # 可选：chain_concat / scfv_mean
+    MODEL_INPUT_DIM = (
+        ESM_EMBEDDING_DIM * 2
+        if MODEL_FEATURE_MODE == "chain_concat"
+        else ESM_EMBEDDING_DIM
+    )
     HIDDEN_DIM = 256    # 隐藏层维度（数据量小，不需要太宽）
     DROPOUT    = 0.2    # Dropout 比例，防止小数据集过拟合
 
@@ -59,6 +70,8 @@ class Config:
     MIN_EVAL_GROUPS = 3  # val/test 至少各保留几个组；数据集组太少时会自动降低
     MAX_EVAL_GROUP_SIZE_RATIO = 1.5
     # val/test 选择组时，默认不选超过目标样本数 1.5 倍的超大组；这些组更适合留在 train。
+    SPLIT_OBJECTIVE = "rows_balanced"  # 可选：rows_balanced / groups_then_rows
+    CHECKPOINT_METRIC = "val_weighted_spearman"  # 可选：val_weighted_spearman / val_median_spearman
     GROUP_COL        = "compatible_group"   # 在每个抗原-抗体对的csv总表里，Kd/IC50可以直接进行比较的数据点被分为一组，它们的组号被记录在GROUP_COL指导的列
     RANK_LABEL_COL   = "label"      # 排序用标签：方向已统一，越大亲和力越强
     MSE_LABEL_COL    = "label_z"    # MSE 用组内 z-score 归一化，避免不同量纲支配训练
@@ -68,7 +81,7 @@ class Config:
     DATA_DIR        = "data/binding"          # FLAb binding 数据目录
     METADATA_PATH   = "data/flab_metadata.csv"
     EMBED_CACHE_DIR = "cache/embeddings"      # embedding 缓存目录
-    OUTPUT_DIR     = "results/affinity_model" # 模型权重和结果输出目录
+    OUTPUT_DIR     = "results/affinity_model_v2" # 模型权重和结果输出目录
 
     # ── 随机种子 ───────────────────────────────────────────────────────────────
     SEED = 42

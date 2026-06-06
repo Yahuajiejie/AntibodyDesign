@@ -23,6 +23,60 @@ from torch.utils.data import Dataset
 from .config import cfg
 
 
+def _stack_embedding_column(df, column: str) -> np.ndarray:
+    """
+    将 DataFrame 里存着 np.ndarray 的一列堆成二维矩阵。
+
+    参数：
+      df:     含 embedding 列的 DataFrame
+      column: embedding 列名，例如 "heavy_embedding"
+
+    返回：
+      np.ndarray，形状 [n_rows, embedding_dim]
+    """
+    if column not in df.columns:
+        raise ValueError(f"训练数据缺少 {column!r} 列")
+    return np.stack(df[column].values).astype(np.float32)
+
+
+def build_model_feature_matrix(df) -> np.ndarray:
+    """
+    根据 cfg.MODEL_FEATURE_MODE 生成 MLP 输入矩阵。
+
+    chain_concat:
+      输入需要 v2.1 cache 里的 heavy_embedding 和 light_embedding。
+      返回 [heavy_embedding, light_embedding] 的朴素拼接，形状 [N, 2560]。
+
+    scfv_mean:
+      沿用 v1 cache 里的 embedding，形状 [N, 1280]。
+    """
+    if cfg.MODEL_FEATURE_MODE == "chain_concat":
+        required = ["heavy_embedding", "light_embedding"]
+        missing = [col for col in required if col not in df.columns]
+        if missing:
+            raise ValueError(
+                "当前 MODEL_FEATURE_MODE=chain_concat，需要先重新运行 "
+                "--mode embed 生成 v2.1 cache；缺少列: "
+                f"{missing}"
+            )
+        heavy = _stack_embedding_column(df, "heavy_embedding")
+        light = _stack_embedding_column(df, "light_embedding")
+        return np.concatenate([heavy, light], axis=1).astype(np.float32)
+
+    if cfg.MODEL_FEATURE_MODE == "scfv_mean":
+        if "embedding" not in df.columns:
+            raise ValueError(
+                "当前 MODEL_FEATURE_MODE=scfv_mean，但缓存缺少 v1 的 "
+                "'embedding' 列；请用 --model_feature_mode scfv_mean 重新运行 --mode embed"
+            )
+        return _stack_embedding_column(df, "embedding")
+
+    raise ValueError(
+        f"未知 MODEL_FEATURE_MODE={cfg.MODEL_FEATURE_MODE!r}，"
+        "可选 chain_concat / scfv_mean"
+    )
+
+
 class PairwiseRankingDataset(Dataset):
     """
     Pairwise 排序训练集。
@@ -31,9 +85,9 @@ class PairwiseRankingDataset(Dataset):
       只在同一个 compatible_group 内构造 pair。这样 Kd、IC50、不同抗原、
       不同实验体系之间不会被强行比较。
 
-    为什么存索引而不是直接存 embedding：
-      embedding 维度是 1280，如果每个 pair 都复制两份 embedding，会浪费大量内存。
-      这里保存全局 embedding 矩阵和 pair 的行索引，__getitem__ 时再取。
+    为什么存索引而不是直接存特征：
+      模型输入维度较高，如果每个 pair 都复制两份特征，会浪费大量内存。
+      这里保存全局特征矩阵和 pair 的行索引，__getitem__ 时再取。
     """
 
     def __init__(
@@ -47,15 +101,15 @@ class PairwiseRankingDataset(Dataset):
     ):
         """
         参数：
-          df:                  含 embedding、label、compatible_group 的 DataFrame
+          df:                  含模型特征列、label、compatible_group 的 DataFrame
           label_col:           用来判断强弱的标签列，值越大越强
           group_col:           分组信息所在列的名称
           max_pairs_per_group: 每个组最多采样多少个 pair，防止 O(N²) 爆炸
           min_label_diff:      label 差必须大于该阈值才构造 pair
           seed:                随机采样 pair 的种子
         """
-        self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
-        # stack 堆叠，就是简单的把一堆向量堆成二维数组，而不是把他们弄成栈
+        self.features = build_model_feature_matrix(df)
+        self.feature_dim = int(self.features.shape[1])
         self.labels = df[label_col].values.astype(np.float32)
         self.groups = df[group_col].astype(str).values
 
@@ -92,7 +146,7 @@ class PairwiseRankingDataset(Dataset):
         self.pairs = pairs
         print(
             f"  [PairwiseDataset] {len(df)} 条序列，{len(set(self.groups))} 个组 "
-            f"→ {len(self.pairs):,} 个训练对"
+            f"→ {len(self.pairs):,} 个训练对，feature_dim={self.feature_dim}"
             + (f"，跳过 {skipped_groups} 个不可排序组" if skipped_groups else "")
         )
 
@@ -102,8 +156,8 @@ class PairwiseRankingDataset(Dataset):
     def __getitem__(self, idx):
         pos_idx, neg_idx = self.pairs[idx]
         return (
-            torch.tensor(self.embeddings[pos_idx]),
-            torch.tensor(self.embeddings[neg_idx]),
+            torch.tensor(self.features[pos_idx]),
+            torch.tensor(self.features[neg_idx]),
             torch.tensor(self.labels[pos_idx]),
             torch.tensor(self.labels[neg_idx]),
         )
@@ -118,15 +172,16 @@ class PointwiseRegressionDataset(Dataset):
     """
 
     def __init__(self, df, target_col: str = cfg.MSE_LABEL_COL):
-        self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
+        self.features = build_model_feature_matrix(df)
+        self.feature_dim = int(self.features.shape[1])
         self.targets = df[target_col].values.astype(np.float32)
 
     def __len__(self):
-        return len(self.embeddings)
+        return len(self.features)
 
     def __getitem__(self, idx):
         return (
-            torch.tensor(self.embeddings[idx]),
+            torch.tensor(self.features[idx]),
             torch.tensor(self.targets[idx]),
         )
 
@@ -140,14 +195,15 @@ class ScoringDataset(Dataset):
     """
 
     def __init__(self, df, label_col: str = cfg.RANK_LABEL_COL):
-        self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
+        self.features = build_model_feature_matrix(df)
+        self.feature_dim = int(self.features.shape[1])
         self.labels = df[label_col].values.astype(np.float32)
 
     def __len__(self):
-        return len(self.embeddings)
+        return len(self.features)
 
     def __getitem__(self, idx):
         return (
-            torch.tensor(self.embeddings[idx]),
+            torch.tensor(self.features[idx]),
             torch.tensor(self.labels[idx]),
         )

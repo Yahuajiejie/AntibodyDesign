@@ -36,7 +36,7 @@ def flatten_datasets(embedded_datasets: dict[str, pd.DataFrame]) -> pd.DataFrame
 
     输入：
       embedded_datasets:
-        key = 数据集名，value = 含 embedding/label/compatible_group 的 DataFrame
+        key = 数据集名，value = 含模型特征列/label/compatible_group 的 DataFrame
 
     输出：
       一个 DataFrame，每行是一条抗体序列。
@@ -57,15 +57,29 @@ def flatten_datasets(embedded_datasets: dict[str, pd.DataFrame]) -> pd.DataFrame
         raise ValueError("embedded_datasets 为空，无法训练")
 
     all_df = pd.concat(frames, ignore_index=True)
-    required = ["embedding", cfg.RANK_LABEL_COL, cfg.MSE_LABEL_COL, cfg.GROUP_COL]
+    if cfg.MODEL_FEATURE_MODE == "chain_concat":
+        feature_cols = ["heavy_embedding", "light_embedding"]
+    elif cfg.MODEL_FEATURE_MODE == "scfv_mean":
+        feature_cols = ["embedding"]
+    else:
+        raise ValueError(
+            f"未知 MODEL_FEATURE_MODE={cfg.MODEL_FEATURE_MODE!r}，"
+            "可选 chain_concat / scfv_mean"
+        )
+
+    required = feature_cols + [cfg.RANK_LABEL_COL, cfg.MSE_LABEL_COL, cfg.GROUP_COL]
     missing = [col for col in required if col not in all_df.columns]
     if missing:
-        raise ValueError(f"训练数据缺少必要列: {missing}")
+        raise ValueError(
+            f"训练数据缺少必要列: {missing}。如果你正在使用旧 v1 cache，"
+            "请先重新运行 --mode embed 生成当前 feature_mode 对应的缓存。"
+        )
 
     all_df = all_df.dropna(subset=[cfg.RANK_LABEL_COL, cfg.MSE_LABEL_COL]).reset_index(drop=True)
     print(
         f"\n[训练数据] {len(all_df):,} 条序列，"
-        f"{all_df[cfg.GROUP_COL].nunique()} 个 compatible_group"
+        f"{all_df[cfg.GROUP_COL].nunique()} 个 compatible_group，"
+        f"feature_mode={cfg.MODEL_FEATURE_MODE}"
     )
     return all_df
 
@@ -75,6 +89,7 @@ def _select_groups_near_target(
     target_rows: int,
     forbidden_groups: set[str],
     min_groups: int,
+    target_groups: int | None = None,
 ) -> set[str]:
     """
     从候选 compatible_group 中挑一组，使总样本数尽量接近 target_rows。
@@ -87,6 +102,10 @@ def _select_groups_near_target(
     实现方法：
       用一个小型动态规划做 subset search。状态是 (当前总行数, 当前组数)，
       值是已选择的组名 tuple。这样比简单随机切分更能控制样本数比例。
+
+    SPLIT_OBJECTIVE:
+      rows_balanced    先追求样本行数接近目标，行为接近 v1；
+      groups_then_rows 先追求 group 数接近目标，再追求样本行数接近目标。
     """
     available = [
         (str(name), int(size))
@@ -137,18 +156,31 @@ def _select_groups_near_target(
         available_sorted = sorted(available, key=lambda item: item[1])
         return {name for name, _ in available_sorted[:max(1, min_groups)]}
 
-    best_rows, _, best_groups = min(
-        valid,
-        key=lambda item: (
+    if cfg.SPLIT_OBJECTIVE == "rows_balanced":
+        sort_key = lambda item: (
             abs(item[0] - target_rows),  # 样本数越接近目标越好
             item[1],                     # 同样接近时，用更少组，评估更清晰
             item[0],                     # 再同样时，偏向稍小评估集
-        ),
-    )
+        )
+    elif cfg.SPLIT_OBJECTIVE == "groups_then_rows":
+        if target_groups is None:
+            target_groups = min_groups
+        sort_key = lambda item: (
+            abs(item[1] - target_groups),  # 先让 group 数接近 8:1:1
+            abs(item[0] - target_rows),    # 再让样本数接近 8:1:1
+            item[0],
+        )
+    else:
+        raise ValueError(
+            f"未知 SPLIT_OBJECTIVE={cfg.SPLIT_OBJECTIVE!r}，"
+            "可选 rows_balanced / groups_then_rows"
+        )
+
+    best_rows, _, best_groups = min(valid, key=sort_key)
     # min返回的是可迭代容器中，key及其函数值最小的物体
     print(
         f"  [split search] target={target_rows:,}, selected={best_rows:,}, "
-        f"groups={len(best_groups)}"
+        f"groups={len(best_groups)}, objective={cfg.SPLIT_OBJECTIVE}"
     )
     return set(best_groups)
 
@@ -177,18 +209,22 @@ def split_by_group(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
     target_val_rows = max(cfg.MIN_GROUP_SIZE, int(round(total_rows * cfg.VAL_RATIO)))
     target_test_rows = max(cfg.MIN_GROUP_SIZE, int(round(total_rows * cfg.TEST_RATIO)))
     min_eval_groups = min(cfg.MIN_EVAL_GROUPS, max(1, (n_groups - 1) // 2))
+    target_val_groups = max(min_eval_groups, int(round(n_groups * cfg.VAL_RATIO)))
+    target_test_groups = max(min_eval_groups, int(round(n_groups * cfg.TEST_RATIO)))
 
     test_groups = _select_groups_near_target(
         group_sizes=group_sizes,
         target_rows=target_test_rows,
         forbidden_groups=set(),
         min_groups=min_eval_groups,
+        target_groups=target_test_groups,
     )
     val_groups = _select_groups_near_target(
         group_sizes=group_sizes,
         target_rows=target_val_rows,
         forbidden_groups=test_groups,
         min_groups=min_eval_groups,
+        target_groups=target_val_groups,
     )
     train_groups = set(group_sizes.index) - val_groups - test_groups
 
@@ -209,6 +245,56 @@ def split_by_group(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.Dat
         f"test={len(test_df):,} 条/{len(test_groups)} 组({test_ratio:.1%})"
     )
     return train_df, val_df, test_df
+
+
+def _first_value(group_df: pd.DataFrame, col: str, default=""):
+    """取 group 内某列的第一个非空值，用于 split report。"""
+    if col not in group_df.columns:
+        return default
+    values = group_df[col].dropna().astype(str).unique().tolist()
+    return values[0] if values else default
+
+
+def _write_split_report(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    test_df: pd.DataFrame,
+    output_dir: str,
+    loss_name: str,
+) -> str:
+    """
+    保存 train/val/test 的 group 级质检表。
+
+    输出 CSV 每行对应一个 compatible_group，方便检查：
+      - 同一 group 是否只出现在一个 split；
+      - 每个 split 中有哪些原始 dataset；
+      - group 大小、标签范围、assay 信息和 light chain 覆盖率。
+    """
+    records = []
+    split_frames = [("train", train_df), ("val", val_df), ("test", test_df)]
+    for split_name, split_df in split_frames:
+        for group_name, group_df in split_df.groupby(cfg.GROUP_COL):
+            record = {
+                "compatible_group": str(group_name),
+                "split": split_name,
+                "dataset": _first_value(group_df, "dataset", str(group_name)),
+                "n_rows": int(len(group_df)),
+                "n_unique_label": int(group_df[cfg.RANK_LABEL_COL].nunique()),
+                "label_min": float(group_df[cfg.RANK_LABEL_COL].min()),
+                "label_max": float(group_df[cfg.RANK_LABEL_COL].max()),
+                "assay_family": _first_value(group_df, "assay_family"),
+                "assay_units": _first_value(group_df, "assay_units"),
+            }
+            if "has_light" in group_df.columns:
+                record["has_light_fraction"] = float(group_df["has_light"].astype(float).mean())
+            records.append(record)
+
+    report = pd.DataFrame(records).sort_values(["split", "compatible_group"])
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, f"global_{loss_name}_split_report.csv")
+    report.to_csv(path, index=False)
+    print(f"[划分报告] 已保存: {path}")
+    return path
 
 
 def _predict_scores(model: AffinityMLP, df: pd.DataFrame) -> np.ndarray:
@@ -303,7 +389,7 @@ def evaluate_by_group(
     return summary, detail_df
 
 
-def _build_train_loader(train_df: pd.DataFrame, loss_name: str) -> tuple[DataLoader, nn.Module]:
+def _build_train_loader(train_df: pd.DataFrame, loss_name: str) -> tuple[DataLoader, nn.Module, int]:
     """
     根据 loss_name 构造训练 Dataset 和损失函数。
 
@@ -339,7 +425,7 @@ def _build_train_loader(train_df: pd.DataFrame, loss_name: str) -> tuple[DataLoa
         shuffle=True,
         drop_last=False,
     )
-    return loader, loss_fn
+    return loader, loss_fn, int(dataset.feature_dim)
 
 
 def train_global_model(
@@ -358,10 +444,11 @@ def train_global_model(
 
     all_df = flatten_datasets(embedded_datasets)
     train_df, val_df, test_df = split_by_group(all_df)
+    split_report_path = _write_split_report(train_df, val_df, test_df, output_dir, loss_name)
 
-    train_loader, loss_fn = _build_train_loader(train_df, loss_name)
+    train_loader, loss_fn, feature_dim = _build_train_loader(train_df, loss_name)
 
-    model = AffinityMLP().to(cfg.DEVICE)
+    model = AffinityMLP(input_dim=feature_dim).to(cfg.DEVICE)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.LR,
@@ -409,11 +496,16 @@ def train_global_model(
 
         if epoch % cfg.EVAL_EVERY == 0 or epoch == cfg.EPOCHS:
             val_summary, _ = evaluate_by_group(model, val_df, "val")
-            val_score = val_summary["val_mean_spearman"]
+            if cfg.CHECKPOINT_METRIC not in val_summary:
+                raise ValueError(
+                    f"CHECKPOINT_METRIC={cfg.CHECKPOINT_METRIC!r} 不在验证指标中，"
+                    f"可选: {sorted(val_summary)}"
+                )
+            val_score = val_summary[cfg.CHECKPOINT_METRIC]
             avg_loss = total_loss / max(n_batches, 1)
             print(
                 f"  Epoch {epoch:3d}/{cfg.EPOCHS} "
-                f"loss={avg_loss:.4f} val_mean_spearman={val_score:.4f}"
+                f"loss={avg_loss:.4f} {cfg.CHECKPOINT_METRIC}={val_score:.4f}"
             )
 
             if not np.isnan(val_score) and val_score > best_val:
@@ -436,14 +528,21 @@ def train_global_model(
         "model_state": best_state or model.state_dict(),
         "loss": loss_name,
         "best_epoch": best_epoch,
-        "best_val_mean_spearman": best_val,
+        "checkpoint_metric": cfg.CHECKPOINT_METRIC,
+        f"best_{cfg.CHECKPOINT_METRIC}": best_val,
         "hyperparams": {
-            "input_dim": cfg.ESM_EMBEDDING_DIM,
+            "model_version": cfg.MODEL_VERSION,
+            "feature_mode": cfg.MODEL_FEATURE_MODE,
+            "input_dim": feature_dim,
             "hidden_dim": cfg.HIDDEN_DIM,
             "dropout": cfg.DROPOUT,
             "label_col": cfg.RANK_LABEL_COL,
             "mse_label_col": cfg.MSE_LABEL_COL,
             "group_col": cfg.GROUP_COL,
+            "split_objective": cfg.SPLIT_OBJECTIVE,
+            "checkpoint_metric": cfg.CHECKPOINT_METRIC,
+            "max_pairs_per_group": cfg.MAX_PAIRS_PER_GROUP,
+            "min_label_diff": cfg.MIN_LABEL_DIFF,
         },
         "split_groups": {
             "train": sorted(train_df[cfg.GROUP_COL].astype(str).unique().tolist()),
@@ -466,15 +565,24 @@ def train_global_model(
         "n_val_groups": val_df[cfg.GROUP_COL].nunique(),
         "n_test_groups": test_df[cfg.GROUP_COL].nunique(),
         "best_epoch": best_epoch,
+        "model_version": cfg.MODEL_VERSION,
+        "feature_mode": cfg.MODEL_FEATURE_MODE,
+        "feature_dim": feature_dim,
+        "split_objective": cfg.SPLIT_OBJECTIVE,
+        "checkpoint_metric": cfg.CHECKPOINT_METRIC,
+        "best_checkpoint_score": best_val,
+        "min_label_diff": cfg.MIN_LABEL_DIFF,
         **val_summary,
         **test_summary,
         "model_path": model_path,
+        "split_report_path": split_report_path,
     }
 
     print(
         f"[完成] loss={loss_name} "
-        f"val_mean={result['val_mean_spearman']:.4f} "
-        f"test_mean={result['test_mean_spearman']:.4f} "
+        f"val_weighted={result['val_weighted_spearman']:.4f} "
+        f"test_weighted={result['test_weighted_spearman']:.4f} "
+        f"test_median={result['test_median_spearman']:.4f} "
         f"model={model_path}"
     )
     return result
@@ -503,8 +611,9 @@ def run_global_training(
     print(f"\n[汇总] 全局模型结果已保存: {summary_path}")
     cols = [
         "loss",
-        "val_mean_spearman",
-        "test_mean_spearman",
+        "feature_mode",
+        "val_weighted_spearman",
+        "test_weighted_spearman",
         "test_median_spearman",
         "test_n_groups",
     ]

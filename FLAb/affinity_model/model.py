@@ -21,19 +21,21 @@ class AffinityMLP(nn.Module):
     两层共享 MLP 预测头。
 
     架构：
-      输入 [1280] → Linear → GELU → Dropout → Linear → 输出 [1]
+      输入 [input_dim] → Linear → GELU → Dropout → Linear → 输出 [1]
 
-    输入：ESM2 mean pooling embedding，维度 = cfg.ESM_EMBEDDING_DIM
+    输入：ESM2 mean pooling embedding 或 heavy/light 拼接特征
     输出：单个标量分数，值越大代表预测亲和力越强
     """
 
     def __init__(
         self,
-        input_dim:  int   = cfg.ESM_EMBEDDING_DIM,
+        input_dim:  int | None = None,
         hidden_dim: int   = cfg.HIDDEN_DIM,
         dropout:    float = cfg.DROPOUT,
     ):
         super().__init__()
+        if input_dim is None:
+            input_dim = cfg.MODEL_INPUT_DIM
 
         self.net = nn.Sequential(
             # 第一层：高维 embedding → 低维特征

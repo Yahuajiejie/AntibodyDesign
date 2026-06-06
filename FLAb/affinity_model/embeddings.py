@@ -118,24 +118,86 @@ def get_or_compute_embedding(seq: str, cache_dir: str) -> np.ndarray:
     return emb
 
 
+def _normalize_sequence_value(value) -> str:
+    """
+    把 DataFrame 里的序列值整理成稳定字符串。
+
+    DataFrame 单元格可能是 NaN、空字符串，或者带有空格/换行的字符串。
+    这里统一转成大写、去掉空白字符，避免同一条序列因为格式不同而重复缓存。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (float, np.floating)) and np.isnan(value):
+        return ""
+    return "".join(str(value).split()).upper()
+
+
+def _is_valid_sequence_value(seq: str) -> bool:
+    """
+    判断整理后的序列是否真的存在。
+
+    这里不严格检查每个氨基酸字符是否合法，因为 FLAb 中可能包含 X 等未知
+    残基；只过滤明显的缺失值。
+    """
+    return bool(seq) and seq.lower() not in {"nan", "none", "null", "na"}
+
+
+def _collect_unique_sequences(datasets: dict, columns: list[str]) -> set[str]:
+    """
+    从多个 DataFrame 的指定列中收集唯一序列。
+
+    参数：
+      datasets: load_all_datasets() 返回的 dict
+      columns:  需要扫描的序列列名，例如 ["heavy", "light"]
+
+    返回：
+      set[str]，所有有效的唯一序列。
+    """
+    all_seqs: set[str] = set()
+    for df in datasets.values():
+        for col in columns:
+            if col not in df.columns:
+                continue
+            for value in df[col].tolist():
+                seq = _normalize_sequence_value(value)
+                if _is_valid_sequence_value(seq):
+                    all_seqs.add(seq)
+    return all_seqs
+
+
 def embed_all_datasets(datasets: dict, cache_dir: str) -> dict:
     """
     对所有数据集中的每条序列提取 embedding，写入磁盘缓存。
 
     优化：
       - 跨数据集去重：相同序列只计算一次（某些序列在多个 benchmark 中出现）
-      - 提取完后将 embedding 填回各数据集的 DataFrame，新增 "embedding" 列
+      - v2.1 默认分别提取 heavy/light embedding，新增
+        "heavy_embedding"、"light_embedding"、"has_light" 列
+      - scfv_mean 消融模式沿用 v1，新增 "embedding" 列
 
     这是训练前最耗时的步骤（GPU 密集），但只需要执行一次。
     """
     os.makedirs(cache_dir, exist_ok=True)
 
-    # 收集所有唯一序列，跨数据集去重
-    all_seqs = set()
-    for df in datasets.values():
-        all_seqs.update(df["sequence"].tolist())
+    if cfg.MODEL_FEATURE_MODE == "chain_concat":
+        sequence_columns = ["heavy", "light"]
+    elif cfg.MODEL_FEATURE_MODE == "scfv_mean":
+        sequence_columns = ["sequence"]
+    else:
+        raise ValueError(
+            "未知 MODEL_FEATURE_MODE="
+            f"{cfg.MODEL_FEATURE_MODE!r}，可选 chain_concat / scfv_mean"
+        )
+
+    # 收集所有唯一序列，跨数据集去重。
+    all_seqs = _collect_unique_sequences(datasets, sequence_columns)
+    if not all_seqs:
+        raise ValueError(
+            f"没有找到可 embedding 的序列列：{sequence_columns}，请检查数据加载结果"
+        )
 
     print(f"\n[Embedding] {len(all_seqs)} 条唯一序列，开始提取...")
+    print(f"[Embedding] feature_mode={cfg.MODEL_FEATURE_MODE}")
 
     # 逐条提取（或从缓存读取）
     seq_to_emb: dict[str, np.ndarray] = {}
@@ -150,10 +212,38 @@ def embed_all_datasets(datasets: dict, cache_dir: str) -> dict:
 
     # 把 embedding 填回各数据集的 DataFrame
     embedded = {}
+    zero_embedding = np.zeros(cfg.ESM_EMBEDDING_DIM, dtype=np.float32)
     for name, df in datasets.items():
         df = df.copy()
-        # map：将序列字符串映射为对应的 embedding numpy array
-        df["embedding"] = df["sequence"].map(seq_to_emb)
+
+        if cfg.MODEL_FEATURE_MODE == "chain_concat":
+            if "heavy" not in df.columns:
+                raise ValueError(f"{name} 缺少 heavy 列，无法生成 chain_concat 特征")
+
+            heavy_seqs = df["heavy"].map(_normalize_sequence_value)
+            missing_heavy = [seq for seq in heavy_seqs if not _is_valid_sequence_value(seq)]
+            if missing_heavy:
+                raise ValueError(f"{name} 存在空 heavy 序列，无法生成 embedding")
+
+            df["heavy_embedding"] = heavy_seqs.map(seq_to_emb)
+
+            if "light" in df.columns:
+                light_seqs = df["light"].map(_normalize_sequence_value)
+                has_light = light_seqs.map(_is_valid_sequence_value)
+                df["has_light"] = has_light.astype(bool)
+                df["light_embedding"] = [
+                    seq_to_emb[seq] if has else zero_embedding
+                    for seq, has in zip(light_seqs, has_light)
+                ]
+            else:
+                df["has_light"] = False
+                df["light_embedding"] = [zero_embedding] * len(df)
+        else:
+            if "sequence" not in df.columns:
+                raise ValueError(f"{name} 缺少 sequence 列，无法生成 scfv_mean 特征")
+            seqs = df["sequence"].map(_normalize_sequence_value)
+            df["embedding"] = seqs.map(seq_to_emb)
+
         embedded[name] = df
 
     # 将整个 embedded_datasets 额外序列化到磁盘，方便 train 阶段直接加载

@@ -301,13 +301,23 @@ def _standardize_sequences(df: pd.DataFrame) -> pd.DataFrame | None:
         print("  [SKIP] 缺少 heavy 重链序列列")
         return None
 
-    required_cols = ["heavy"] + (["light"] if "light" in df.columns else [])
-    df = df.dropna(subset=required_cols).reset_index(drop=True)
+    df = df.dropna(subset=["heavy"]).reset_index(drop=True)
+    missing_tokens = {"", "nan", "none", "null", "na"}
+    heavy_seq = df["heavy"].astype(str).str.strip()
+    valid_heavy = ~heavy_seq.str.lower().isin(missing_tokens)
+    if not valid_heavy.all():
+        df = df.loc[valid_heavy].reset_index(drop=True)
+        heavy_seq = df["heavy"].astype(str).str.strip()
 
     if "light" in df.columns:
-        df["sequence"] = df["heavy"].astype(str) + cfg.LINKER + df["light"].astype(str)
+        light_seq = df["light"].astype(str).str.strip()
+        has_light = df["light"].notna() & ~light_seq.str.lower().isin(missing_tokens)
+        df["sequence"] = heavy_seq
+        df.loc[has_light, "sequence"] = (
+            heavy_seq.loc[has_light] + cfg.LINKER + light_seq.loc[has_light]
+        )
     else:
-        df["sequence"] = df["heavy"].astype(str)
+        df["sequence"] = heavy_seq
 
     return df
 
