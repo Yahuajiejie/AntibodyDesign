@@ -72,6 +72,8 @@ def load_metadata(metadata_path: str = cfg.METADATA_PATH) -> dict[str, dict]:
         return {}
 
     meta = pd.read_csv(metadata_path, low_memory=False)
+    # low_memory=False 让 pandas 一次性看更多数据后再推断列类型。
+    # 这样不容易把同一列在不同分块里推断成不同类型。
     rows = {}
     for _, row in meta.iterrows():
         filename = canonical_filename(str(row.get("filename", "")))
@@ -96,6 +98,7 @@ def _read_csv_or_zip(filepath: str) -> pd.DataFrame | None:
                     print("  [SKIP] zip 中没有 csv 文件")
                     return None
                 with z.open(csv_names[0]) as f:
+                    # 这段代码可能只会得到zip压缩包里的第一个csv文件，但是在这一般没问题
                     return pd.read_csv(f, low_memory=False)
         return pd.read_csv(filepath, low_memory=False)
     except Exception as exc:
@@ -118,6 +121,7 @@ def classify_assay(name: str, metadata_row: dict | None) -> tuple[str, str]:
       - other：其它 binding/enrichment 读数，默认不进入主亲和力模型。
     """
     row = metadata_row or {}
+    # metadata_row 格式如下：
     text = " ".join([
         name,
         str(row.get("assay/units_raw", "")),
@@ -176,6 +180,7 @@ def choose_label_column(df: pd.DataFrame, assay_family: str) -> str | None:
 
     candidates: list[tuple[int, str]] = []
     for col in df.columns:
+        # 对于表格的所有表头(df.columns)，检查哪些表头包含Kd
         col_norm = col.lower().strip()
         if "kd" not in col_norm:
             continue
@@ -198,8 +203,8 @@ def choose_label_column(df: pd.DataFrame, assay_family: str) -> str | None:
         if "fitness" in df.columns and _numeric_fraction(df["fitness"]) >= 0.8:
             return "fitness"
         return None
-    candidates.sort(reverse=True)
-    return candidates[0][1]
+    candidates.sort(reverse=True) # 取优先级最高的表头和列，
+    return candidates[0][1] # 返回的是表头名字
 
 
 def _is_log_label(label_col: str, metadata_row: dict | None) -> bool:
@@ -215,11 +220,11 @@ def _is_log_label(label_col: str, metadata_row: dict | None) -> bool:
         return True
 
     # 对 KD (nM)、Kd avg (M) 这类明确列名，优先相信实际列名；
-    # metadata 有时写的是整理后的 fitness 方向，和原始列不完全一致。
     generic_cols = {"fitness", "label", "score"}
     if col_text not in generic_cols:
         return False
 
+    # 如果表格的 label 无法给出判断，那就在 metadata_row 中做出判断
     row = metadata_row or {}
     meta_text = " ".join([
         str(row.get("assay/units_raw", "")),

@@ -113,7 +113,50 @@ compatible_group    可比较组，当前等于单个 CSV 数据集名
 assay_family        当前默认只接受 kd
 ```
 
+阅读这一节时，先区分两个东西：
+
+```text
+CSV 列名：当前训练数据文件里真实存在的列名，例如 KD (nM)、fitness、heavy。
+metadata：另一个说明书文件 data/flab_metadata.csv，用来说明每个 CSV 大概是什么实验。
+```
+
+函数解释格式：
+
+```text
+自变量：调用函数时传进去的东西。
+输出：函数返回给下一步的东西。
+```
+
 ### `canonical_filename(path_or_name)`
+
+自变量：
+
+```text
+path_or_name: str
+```
+
+含义：一个文件路径或文件名。
+
+例子：
+
+```text
+"data/binding/AbRank_dataset.csv.zip"
+"AbRank_dataset.csv.zip"
+```
+
+输出：
+
+```text
+str
+```
+
+含义：去掉路径、并把 `.csv.zip` 转成 `.csv` 后的标准文件名。
+
+例子：
+
+```text
+"data/binding/AbRank_dataset.csv.zip" -> "AbRank_dataset.csv"
+```
 
 逻辑：
 
@@ -129,7 +172,71 @@ os.path.basename(path_or_name)
 
 `os.path.basename` 是 Python 标准库函数，用于从路径中取最后一级文件名。
 
+### `dataset_name_from_file(path_or_name)`
+
+自变量：
+
+```text
+path_or_name: str
+```
+
+含义：一个 CSV 或 ZIP 文件路径/文件名。
+
+输出：
+
+```text
+str
+```
+
+含义：去掉 `.csv` / `.csv.zip` 后的数据集名，后面会用作 `dataset` 和 `compatible_group`。
+
+例子：
+
+```text
+"AbRank_dataset.csv.zip" -> "AbRank_dataset"
+"garbinski2023_kd.csv" -> "garbinski2023_kd"
+```
+
+逻辑：
+
+1. 先调用 `canonical_filename()`；
+2. 再去掉 `.csv`。
+
 ### `load_metadata(metadata_path)`
+
+自变量：
+
+```text
+metadata_path: str
+```
+
+含义：metadata 说明书文件路径，默认是：
+
+```text
+data/flab_metadata.csv
+```
+
+输出：
+
+```text
+dict[str, dict]
+```
+
+含义：一个字典。key 是文件名，value 是该文件在 metadata 表里的整行信息。
+
+例子：
+
+```python
+{
+    "garbinski2023_kd.csv": {
+        "filename": "garbinski2023_kd.csv",
+        "category": "binding",
+        "assay/units_raw": "-log (KD [M] )",
+        "assay/units": "SPR Kd",
+        ...
+    }
+}
+```
 
 逻辑：
 
@@ -146,6 +253,29 @@ pd.read_csv(metadata_path, low_memory=False)
 `low_memory=False` 让 pandas 在读取大 CSV 时减少分块类型推断带来的 dtype 混乱。
 
 ### `_read_csv_or_zip(filepath)`
+
+自变量：
+
+```text
+filepath: str
+```
+
+含义：一个训练数据文件路径，可以是普通 CSV，也可以是 `.csv.zip`。
+
+输出：
+
+```text
+pd.DataFrame | None
+```
+
+含义：
+
+```text
+读取成功 -> 返回 DataFrame
+读取失败/zip 里没有 CSV -> 返回 None
+```
+
+注意：如果 zip 里有多个 CSV，当前代码只读取第一个 CSV。
 
 逻辑：
 
@@ -167,6 +297,44 @@ with zipfile.ZipFile(filepath) as z:
 
 ### `classify_assay(name, metadata_row)`
 
+自变量：
+
+```text
+name: str
+metadata_row: dict | None
+```
+
+`name` 是数据集名，通常来自文件名。
+
+例子：
+
+```text
+"kothiwal2025htp_DCC_spr"
+```
+
+`metadata_row` 是 metadata 里对应这个 CSV 的那一行。如果找不到 metadata，就是 `None`。
+
+输出：
+
+```text
+tuple[str, str]
+```
+
+含义：返回两个字符串。
+
+```text
+第一个字符串：assay_family，数据类型分类
+第二个字符串：reason，为什么这样分类
+```
+
+例子：
+
+```python
+("kd", "真实 Kd 类亲和力数据")
+("ic50", "IC50 是功能性抑制读数，不等同 Kd")
+("mixed_affinity_functional", "同时包含 Kd 与 IC50/EC50，默认不自动拆分")
+```
+
 逻辑：
 
 1. 拼接文件名、`assay/units_raw`、`assay/units`、`key_words`；
@@ -186,7 +354,82 @@ with zipfile.ZipFile(filepath) as z:
 - 这个函数是防止混用 Kd、IC50、EC50 的第一道门。
 - 当前只有 `kd` 会通过 `cfg.ALLOWED_ASSAY_FAMILIES`。
 
+### `_numeric_fraction(series)`
+
+自变量：
+
+```text
+series: pd.Series
+```
+
+含义：DataFrame 中的一列。
+
+例子：
+
+```text
+df["KD (nM)"]
+df["fitness"]
+```
+
+输出：
+
+```text
+float
+```
+
+含义：这一列里有多少比例的值可以转成数字。
+
+例子：
+
+```text
+1.0  表示 100% 都能转成数字
+0.5  表示 50% 能转成数字
+0.0  表示完全不是数值列
+```
+
+用途：判断某列能不能当作亲和力标签列。
+
 ### `choose_label_column(df, assay_family)`
+
+自变量：
+
+```text
+df: pd.DataFrame
+assay_family: str
+```
+
+`df` 是刚从 CSV 读出来、已经标准化过 heavy/light 的表格。
+
+`assay_family` 是 `classify_assay()` 的第一个返回值，例如：
+
+```text
+"kd"
+"ic50"
+"binary"
+```
+
+输出：
+
+```text
+str | None
+```
+
+含义：
+
+```text
+找到标签列 -> 返回列名，例如 "KD (nM)"、"neg_log_Kd"、"fitness"
+找不到可靠标签列 -> 返回 None
+```
+
+例子：
+
+```text
+CSV 列名: heavy, light, KD (nM), fitness
+输出: "KD (nM)"
+
+CSV 列名: heavy, light, neg_log_Kd, fitness
+输出: "neg_log_Kd"
+```
 
 逻辑：
 
@@ -204,7 +447,95 @@ pd.to_numeric(series, errors="coerce")
 
 `errors="coerce"` 会把不能转成数字的值变成 `NaN`，便于判断某列是不是可靠数值列。
 
+### `_is_log_label(label_col, metadata_row)`
+
+自变量：
+
+```text
+label_col: str
+metadata_row: dict | None
+```
+
+`label_col` 是 `choose_label_column()` 选出来的列名。
+
+例子：
+
+```text
+"KD (nM)"
+"neg_log_Kd"
+"fitness"
+```
+
+`metadata_row` 是 metadata 里对应这个 CSV 的说明行。
+
+输出：
+
+```text
+bool
+```
+
+含义：
+
+```text
+True  -> 这列已经是 -logKd / neg_log_Kd，越大越强，不需要再取 -log10
+False -> 这列是原始 Kd，越小越强，需要转成 -log10(Kd)
+```
+
+例子：
+
+```text
+"_is_log_label('neg_log_Kd', row)" -> True
+"_is_log_label('KD (nM)', row)" -> False
+"_is_log_label('fitness', row)" -> 需要看 metadata
+```
+
+人话解释：
+
+```text
+列名很明确时，相信列名。
+列名很模糊时，比如 fitness，才参考 metadata。
+```
+
 ### `normalize_label(df, label_col, assay_family, metadata_row)`
+
+自变量：
+
+```text
+df: pd.DataFrame
+label_col: str
+assay_family: str
+metadata_row: dict | None
+```
+
+`df` 是当前 CSV 对应的数据表。
+
+`label_col` 是亲和力标签列名，例如：
+
+```text
+"KD (nM)"
+"neg_log_Kd"
+"fitness"
+```
+
+`assay_family` 目前主要使用 `"kd"`。
+
+`metadata_row` 是当前 CSV 的说明书信息。
+
+输出：
+
+```text
+pd.DataFrame
+```
+
+含义：返回一个新 DataFrame，比输入多出这些列：
+
+```text
+label_raw        原始标签值
+label            方向统一后的标签，越大亲和力越强
+label_transform  标签如何被处理
+label_z          组内 z-score，MSE 使用
+label_rank       组内百分位 rank
+```
 
 逻辑：
 
@@ -242,6 +573,29 @@ out["label"].rank(method="average", pct=True)
 
 ### `_standardize_sequences(df)`
 
+自变量：
+
+```text
+df: pd.DataFrame
+```
+
+含义：从 CSV 读出的原始表格。
+
+输出：
+
+```text
+pd.DataFrame | None
+```
+
+含义：
+
+```text
+成功 -> 返回带 sequence 列的新 DataFrame
+失败 -> 返回 None，例如缺少 heavy 列
+```
+
+新增的 `sequence` 列是模型真正要送进 ESM2 的序列。
+
 逻辑：
 
 1. 把别名列重命名成 `heavy` / `light`；
@@ -262,6 +616,40 @@ heavy + GGGGSGGGGSGGGGS + light
 ### `load_one_dataset(filepath, metadata)`
 
 单文件主入口。
+
+自变量：
+
+```text
+filepath: str
+metadata: dict[str, dict] | None
+```
+
+`filepath` 是一个 CSV 或 `.csv.zip` 文件路径。
+
+`metadata` 是 `load_metadata()` 的输出，也就是“文件名 -> 说明书行”的字典。
+
+输出：
+
+```text
+pd.DataFrame | None
+```
+
+含义：
+
+```text
+合格数据集 -> 返回标准化后的 DataFrame
+不合格数据集 -> 返回 None
+```
+
+不合格包括：
+
+```text
+不是 Kd 主任务
+缺少 heavy
+找不到标签列
+数据量小于 MIN_GROUP_SIZE
+label 没有排序差异
+```
 
 流程：
 
@@ -287,6 +675,34 @@ heavy + GGGGSGGGGSGGGGS + light
 
 ### `load_all_datasets(data_dir, metadata_path)`
 
+自变量：
+
+```text
+data_dir: str
+metadata_path: str
+```
+
+`data_dir` 是 binding CSV 文件所在目录。
+
+`metadata_path` 是 metadata 说明书文件路径。
+
+输出：
+
+```text
+dict[str, pd.DataFrame]
+```
+
+含义：key 是数据集名，value 是 `load_one_dataset()` 返回的标准化 DataFrame。
+
+例子：
+
+```python
+{
+    "garbinski2023_kd": DataFrame(...),
+    "kothiwal2025htp_DCC_spr": DataFrame(...),
+}
+```
+
 逻辑：
 
 1. 读取 metadata；
@@ -299,6 +715,25 @@ heavy + GGGGSGGGGSGGGGS + light
 该模块基本沿用旧实现，用 ESM2 提取冻结 embedding。
 
 ### `get_esm_model()`
+
+自变量：
+
+```text
+无
+```
+
+输出：
+
+```text
+tuple[EsmTokenizer, EsmModel]
+```
+
+含义：
+
+```text
+EsmTokenizer: 把氨基酸字符串转成 ESM2 能读的 token id
+EsmModel: ESM2 模型本体，用来提取 embedding
+```
 
 逻辑：
 
@@ -319,6 +754,35 @@ _model.eval()
 - `.eval()` 关闭 dropout，保证 embedding 稳定。
 
 ### `embed_sequence(seq)`
+
+自变量：
+
+```text
+seq: str
+```
+
+含义：一条已经拼好的抗体序列。
+
+例子：
+
+```text
+双链抗体: heavy + linker + light
+VHH: heavy
+```
+
+输出：
+
+```text
+np.ndarray
+```
+
+含义：ESM2 提取出的定长向量，默认形状是：
+
+```text
+(1280,)
+```
+
+这就是后面 MLP 的输入。
 
 逻辑：
 
@@ -344,6 +808,29 @@ embedding = hidden[0, 1:-1, :].mean(dim=0)
 
 ### `get_or_compute_embedding(seq, cache_dir)`
 
+自变量：
+
+```text
+seq: str
+cache_dir: str
+```
+
+`seq` 是一条抗体序列。
+
+`cache_dir` 是 embedding 缓存目录，例如：
+
+```text
+cache/embeddings
+```
+
+输出：
+
+```text
+np.ndarray
+```
+
+含义：这条序列的 ESM2 embedding。
+
 逻辑：
 
 1. 用 MD5 hash 生成缓存文件名；
@@ -351,6 +838,31 @@ embedding = hidden[0, 1:-1, :].mean(dim=0)
 3. 否则调用 ESM2 计算并 `np.save()`。
 
 ### `embed_all_datasets(datasets, cache_dir)`
+
+自变量：
+
+```text
+datasets: dict[str, pd.DataFrame]
+cache_dir: str
+```
+
+`datasets` 是 `load_all_datasets()` 的输出。
+
+`cache_dir` 是 embedding 缓存目录。
+
+输出：
+
+```text
+dict[str, pd.DataFrame]
+```
+
+含义：和输入 datasets 结构一样，但每个 DataFrame 多出一列：
+
+```text
+embedding
+```
+
+这一列的每个值都是一个 `np.ndarray`，形状默认是 `(1280,)`。
 
 逻辑：
 
@@ -368,11 +880,75 @@ pickle.load(f)
 
 pickle 用于保存 Python dict/DataFrame 结构，方便 `--mode train` 直接加载。
 
+### `load_cached_datasets(cache_dir)`
+
+自变量：
+
+```text
+cache_dir: str
+```
+
+含义：embedding 缓存目录。
+
+输出：
+
+```text
+dict[str, pd.DataFrame]
+```
+
+含义：从 `embedded_datasets.pkl` 读取出的 embedded datasets。
+
+用途：`python train.py --mode train` 时不用重新跑 ESM2。
+
 ## 六、dataset.py
 
 ### `PairwiseRankingDataset`
 
 用于 `ranknet` 和 `hinge`。
+
+构造函数自变量：
+
+```text
+df
+label_col: str
+group_col: str
+max_pairs_per_group: int
+min_label_diff: float
+seed: int
+```
+
+`df` 是训练集 DataFrame，必须包含：
+
+```text
+embedding
+label
+compatible_group
+```
+
+`label_col` 指排序标签列，默认是 `label`。
+
+`group_col` 指可比较组列，默认是 `compatible_group`。
+
+`max_pairs_per_group` 限制每个组最多产生多少 pair，避免 O(N²) 爆炸。
+
+`min_label_diff` 表示两个样本的 label 至少差多少才构造 pair。
+
+`seed` 控制随机采样 pair 的可复现性。
+
+Dataset 输出：
+
+```text
+__getitem__(idx) -> (emb_pos, emb_neg, fit_pos, fit_neg)
+```
+
+含义：
+
+```text
+emb_pos: 高亲和力样本的 embedding
+emb_neg: 低亲和力样本的 embedding
+fit_pos: 高亲和力样本的 label
+fit_neg: 低亲和力样本的 label
+```
 
 核心逻辑：
 
@@ -406,6 +982,35 @@ rng.choice(len(local_pairs), size=max_pairs_per_group, replace=False)
 
 用于 `mse`。
 
+构造函数自变量：
+
+```text
+df
+target_col: str
+```
+
+`df` 是训练集 DataFrame，必须包含：
+
+```text
+embedding
+label_z
+```
+
+`target_col` 默认是 `label_z`。
+
+Dataset 输出：
+
+```text
+__getitem__(idx) -> (embedding, target)
+```
+
+含义：
+
+```text
+embedding: 单条抗体序列的 ESM2 向量
+target: 组内标准化后的 label_z
+```
+
 逻辑：
 
 ```python
@@ -422,6 +1027,30 @@ self.targets = df[target_col].values.astype(np.float32)
 
 用于验证/测试推理。
 
+构造函数自变量：
+
+```text
+df
+label_col: str
+```
+
+`df` 是验证集或测试集 DataFrame。
+
+`label_col` 默认是 `label`，用于和模型预测分数计算 Spearman。
+
+Dataset 输出：
+
+```text
+__getitem__(idx) -> (embedding, label)
+```
+
+含义：
+
+```text
+embedding: 单条抗体序列的 ESM2 向量
+label: 方向统一后的真实排序标签
+```
+
 逻辑：
 
 每次返回：
@@ -435,6 +1064,33 @@ self.targets = df[target_col].values.astype(np.float32)
 ## 七、losses.py
 
 ### `MSELoss`
+
+自变量：
+
+```text
+score: torch.Tensor
+target: torch.Tensor
+```
+
+`score` 是模型输出，形状通常是：
+
+```text
+[batch, 1]
+```
+
+`target` 是真实目标值，这里必须是 `label_z`，形状通常也是：
+
+```text
+[batch, 1]
+```
+
+输出：
+
+```text
+torch.Tensor
+```
+
+含义：一个标量 loss，用于反向传播。
 
 公式：
 
@@ -451,6 +1107,29 @@ nn.MSELoss(reduction="mean")
 PyTorch 内置均方误差，`reduction="mean"` 表示对 batch 平均。
 
 ### `PairwiseHingeLoss`
+
+自变量：
+
+```text
+score_pos: torch.Tensor
+score_neg: torch.Tensor
+fitness_pos: torch.Tensor | None
+fitness_neg: torch.Tensor | None
+```
+
+`score_pos` 是高亲和力样本的模型分数。
+
+`score_neg` 是低亲和力样本的模型分数。
+
+`fitness_pos` / `fitness_neg` 是为了和其它 pairwise loss 接口一致保留的参数，当前 loss 不使用它们。
+
+输出：
+
+```text
+torch.Tensor
+```
+
+含义：一个标量 loss。
 
 公式：
 
@@ -472,6 +1151,25 @@ torch.clamp(self.margin - diff, min=0.0)
 `torch.clamp` 把负损失截断为 0，实现 hinge。
 
 ### `RankNetLoss`
+
+自变量：
+
+```text
+score_pos: torch.Tensor
+score_neg: torch.Tensor
+fitness_pos: torch.Tensor | None
+fitness_neg: torch.Tensor | None
+```
+
+含义同 `PairwiseHingeLoss`。
+
+输出：
+
+```text
+torch.Tensor
+```
+
+含义：一个标量 loss。
 
 公式：
 
@@ -504,6 +1202,46 @@ LOSS_REGISTRY = {
 
 ### `AffinityMLP`
 
+构造函数自变量：
+
+```text
+input_dim: int
+hidden_dim: int
+dropout: float
+```
+
+`input_dim` 是输入 embedding 维度，ESM2-650M 默认是 `1280`。
+
+`hidden_dim` 是 MLP 中间层维度，默认是 `256`。
+
+`dropout` 是训练时随机丢弃神经元的比例，默认是 `0.2`。
+
+模型输入：
+
+```text
+x: torch.Tensor
+```
+
+形状：
+
+```text
+[batch, 1280]
+```
+
+模型输出：
+
+```text
+torch.Tensor
+```
+
+形状：
+
+```text
+[batch, 1]
+```
+
+含义：每条序列的亲和力预测分数。分数越大，模型认为亲和力越强。
+
 结构：
 
 ```text
@@ -535,6 +1273,20 @@ self.net = nn.Sequential(
 
 ### `_init_weights()`
 
+自变量：
+
+```text
+无
+```
+
+输出：
+
+```text
+无返回值
+```
+
+作用：直接修改模型内部 Linear 层的参数初始值。
+
 逻辑：
 
 对所有 Linear 层做 Xavier 初始化：
@@ -552,6 +1304,40 @@ Xavier 初始化用于让训练初期各层输出方差更稳定。
 
 ### `flatten_datasets(embedded_datasets)`
 
+自变量：
+
+```text
+embedded_datasets: dict[str, pd.DataFrame]
+```
+
+含义：`embed_all_datasets()` 或 `load_cached_datasets()` 的输出。
+
+结构例子：
+
+```python
+{
+    "garbinski2023_kd": DataFrame(...),
+    "kothiwal2025htp_DCC_spr": DataFrame(...),
+}
+```
+
+每个 DataFrame 必须包含：
+
+```text
+embedding
+label
+label_z
+compatible_group
+```
+
+输出：
+
+```text
+pd.DataFrame
+```
+
+含义：把所有 DataFrame 上下拼接成一张大表。
+
 逻辑：
 
 1. 把 `dict[str, DataFrame]` 纵向拼接；
@@ -567,6 +1353,34 @@ Xavier 初始化用于让训练初期各层输出方差更稳定。
 - 这里只拼接，不改标签、不合并 group。
 
 ### `split_by_group(df)`
+
+自变量：
+
+```text
+df: pd.DataFrame
+```
+
+含义：`flatten_datasets()` 输出的大表。
+
+必须包含：
+
+```text
+compatible_group
+```
+
+输出：
+
+```text
+tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
+```
+
+含义：
+
+```text
+(train_df, val_df, test_df)
+```
+
+这三张表按 `compatible_group` 整组划分。同一个 group 只会出现在其中一张表里。
 
 逻辑：
 
@@ -599,6 +1413,31 @@ rng.shuffle(group_names)
 
 ### `_predict_scores(model, df)`
 
+自变量：
+
+```text
+model: AffinityMLP
+df: pd.DataFrame
+```
+
+`model` 是已经训练好或正在评估的模型。
+
+`df` 是需要推理的数据表，必须包含 `embedding`。
+
+输出：
+
+```text
+np.ndarray
+```
+
+含义：模型对 df 中每一行样本输出的分数，顺序和 df 行顺序一致。
+
+形状：
+
+```text
+(len(df),)
+```
+
 逻辑：
 
 1. 构造 `ScoringDataset`；
@@ -617,6 +1456,60 @@ with torch.no_grad():
 `shuffle=False` 很关键，否则预测分数无法按原行顺序写回。
 
 ### `evaluate_by_group(model, df, split_name)`
+
+自变量：
+
+```text
+model: AffinityMLP
+df: pd.DataFrame
+split_name: str
+```
+
+`model` 是要评估的模型。
+
+`df` 是验证集或测试集 DataFrame。
+
+`split_name` 是当前评估集合名称，例如：
+
+```text
+"val"
+"test"
+```
+
+输出：
+
+```text
+tuple[dict, pd.DataFrame]
+```
+
+第一个输出 `summary` 是整体汇总指标。
+
+例子：
+
+```python
+{
+    "test_mean_spearman": 0.31,
+    "test_median_spearman": 0.28,
+    "test_weighted_spearman": 0.34,
+    "test_n_groups": 6,
+}
+```
+
+第二个输出 `detail_df` 是逐组明细表，每个 `compatible_group` 一行。
+
+典型列：
+
+```text
+split
+compatible_group
+dataset
+n
+n_unique_label
+spearman
+p_value
+assay_family
+assay_units
+```
 
 逻辑：
 
@@ -643,6 +1536,33 @@ np.average(detail_df["spearman"], weights=detail_df["n"])
 
 ### `_build_train_loader(train_df, loss_name)`
 
+自变量：
+
+```text
+train_df: pd.DataFrame
+loss_name: str
+```
+
+`train_df` 是训练集 DataFrame。
+
+`loss_name` 是损失函数名称，允许：
+
+```text
+"mse"
+"hinge"
+"ranknet"
+```
+
+输出：
+
+```text
+tuple[DataLoader, nn.Module]
+```
+
+第一个输出是 PyTorch `DataLoader`，负责每次喂给模型一个 batch。
+
+第二个输出是损失函数对象，例如 `MSELoss()` 或 `RankNetLoss()`。
+
 逻辑：
 
 - `mse`：
@@ -661,6 +1581,50 @@ np.average(detail_df["spearman"], weights=detail_df["n"])
 ### `train_global_model(embedded_datasets, output_dir, loss_name)`
 
 单个 loss 的完整训练流程。
+
+自变量：
+
+```text
+embedded_datasets: dict[str, pd.DataFrame]
+output_dir: str
+loss_name: str
+```
+
+`embedded_datasets` 是已经带有 `embedding` 列的数据集字典。
+
+`output_dir` 是模型和结果文件保存目录。
+
+`loss_name` 是本次训练使用的 loss：
+
+```text
+"mse"
+"hinge"
+"ranknet"
+```
+
+输出：
+
+```text
+dict
+```
+
+含义：本次训练的汇总结果。
+
+典型字段：
+
+```text
+loss
+n_train
+n_val
+n_test
+n_train_groups
+n_val_groups
+n_test_groups
+best_epoch
+val_mean_spearman
+test_mean_spearman
+model_path
+```
 
 流程：
 
@@ -699,6 +1663,33 @@ torch.save({...}, model_path)
 
 ### `run_global_training(embedded_datasets, output_dir, loss_names)`
 
+自变量：
+
+```text
+embedded_datasets: dict[str, pd.DataFrame]
+output_dir: str
+loss_names: list[str] | None
+```
+
+`loss_names` 是要跑哪些 loss。
+
+例子：
+
+```python
+["mse", "hinge", "ranknet"]
+["ranknet"]
+```
+
+如果是 `None`，默认跑注册表里的全部 loss。
+
+输出：
+
+```text
+pd.DataFrame
+```
+
+含义：每一行是一个 loss 的训练结果汇总。
+
 逻辑：
 
 依次调用 `train_global_model()`，保存：
@@ -726,6 +1717,22 @@ python train.py --mode all
 
 ### `set_seed(seed)`
 
+自变量：
+
+```text
+seed: int
+```
+
+含义：随机种子。相同 seed 通常能得到相同的数据划分、pair 采样和训练初始化。
+
+输出：
+
+```text
+无返回值
+```
+
+作用：修改 PyTorch、CUDA、numpy 的随机状态。
+
 逻辑：
 
 固定 PyTorch、CUDA、numpy 的随机种子。
@@ -743,6 +1750,36 @@ torch.backends.cudnn.benchmark = False
 这样做可提升实验可复现性，但可能略微降低 cuDNN 速度。
 
 ### `main()`
+
+自变量：
+
+```text
+无直接自变量
+```
+
+它从命令行读取参数。
+
+命令行参数包括：
+
+```text
+--mode        embed / train / all
+--data_dir    数据目录
+--cache_dir   embedding 缓存目录
+--output_dir  结果输出目录
+--loss        mse / hinge / ranknet，可多选
+```
+
+输出：
+
+```text
+无直接返回值
+```
+
+作用：
+
+```text
+根据命令行参数执行数据加载、embedding 提取、模型训练，并把结果写入磁盘。
+```
 
 逻辑：
 

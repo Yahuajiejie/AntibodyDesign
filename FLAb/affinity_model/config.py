@@ -36,9 +36,9 @@ class Config:
     MARGIN          = 0.1    # Pairwise hinge loss 的 margin
     WEIGHT_DECAY    = 1e-4   # L2 正则化系数
 
-    # Pairwise 数据量是 O(N²)，必须按“可比较组”限流。
-    # 这里的可比较组默认是单个数据集：同一抗原、同一测量方法、同一标签方向。
-    MAX_PAIRS_PER_GROUP = 10000
+    # Pairwise 数据量是 C(N,2)，必须限制pair数据对的上限。
+    # 这里的可比较组默认是单个数据集：同一抗原、同一测量方法、同一标签方向。跨数据集的物理量未必可比较
+    MAX_PAIRS_PER_GROUP = 20000
     MIN_LABEL_DIFF      = 0.0    # 构造 pair 时要求 label_pos - label_neg > 该阈值
 
     # ── 数据集过滤 ──────────────────────────────────────────────────────────────
@@ -56,9 +56,9 @@ class Config:
 
     # Group split 表示按 compatible_group 整组划分，避免同一 benchmark
     # 的标签同时出现在训练集和测试集里。
-    GROUP_COL        = "compatible_group"
+    GROUP_COL        = "compatible_group"   # 在每个抗原-抗体对的csv总表里，Kd/IC50可以直接进行比较的数据点被分为一组，它们的组号被记录在GROUP_COL指导的列
     RANK_LABEL_COL   = "label"      # 排序用标签：方向已统一，越大亲和力越强
-    MSE_LABEL_COL    = "label_z"    # MSE 用组内 z-score，避免不同量纲支配训练
+    MSE_LABEL_COL    = "label_z"    # MSE 用组内 z-score 归一化，避免不同量纲支配训练
     SPLIT_STRATEGY   = "group"
 
     # ── 路径 ───────────────────────────────────────────────────────────────────
@@ -70,12 +70,12 @@ class Config:
     # ── 随机种子 ───────────────────────────────────────────────────────────────
     SEED = 42
 
-    # ── 设备（自动检测 GPU）────────────────────────────────────────────────────
+    # ── 运行设备 ────────────────────────────────────────────────────
     DEVICE = (
         torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if torch is not None else "cpu"
     )
 
 
-# 全局单例，其他模块直接 from config import cfg 使用
+# 全局实例，其他模块直接 from config import cfg 使用，避免不同文件配置相异
 cfg = Config()
