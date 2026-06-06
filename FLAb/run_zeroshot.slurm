@@ -4,7 +4,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:a800:1
+#SBATCH --gres=gpu:1
 #SBATCH --partition=GPUA800
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/zeroshot_%j.log
