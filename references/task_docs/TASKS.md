@@ -312,7 +312,7 @@ SYVLTQPPSVSVAPGQTARISCGGNNIGNKGVHWYQQKPGQAPVVVVYDDSDRPSGIPERFSGSNSGNTATLTISRVEAG
 
 
 
-###### **（2）结构数据简介**
+##### **（2）结构数据简介**
 
 ​      结构数据来自于OPIG旗下经典的针对抗体结构的SAbDab数据库，数据来源主要是RCSB数据库并保持每周更新，本次提供的是2026年3月5日的下载版本。下载文件内有raw,imgt和chothia三个文件夹，其中raw文件夹是原始的pdb文件；imgt和chothia则是使用不同的标注法（即imgt和chothia标注法）对抗体所在链的编号进行重新标注后的结果，可用于CDR区域的标注。以下是数据信息表内每列内容的含义：
 
@@ -392,13 +392,13 @@ SYVLTQPPSVSVAPGQTARISCGGNNIGNKGVHWYQQKPGQAPVVVVYDDSDRPSGIPERFSGSNSGNTATLTISRVEAG
 
   temperature：进行亲和力/热力学测量时的温度。
 
-###### **（3）纳米抗体数据简介**
+##### **（3）纳米抗体数据简介**
 
   INDI2：https://naturalantibody.com/indi2/#indi2-download-section
 
   ANDD：https://www.nature.com/articles/s41597-026-06878-0
 
-##### **2.数据地址**
+#### **2.数据地址**
 
   https://pan.baidu.com/s/10DcUQOe_0YZ9yLeRGANg5A?pwd=mnsq
 

@@ -1,120 +1,182 @@
-# 第四届 Bio-OS AI 开源大赛 · 抗体设计赛道
+# Bio-OS Antibody Affinity Modeling
 
-## 项目概述
+本仓库是第四届 Bio-OS AI 开源大赛抗体设计赛道的工作目录，当前主线任务是构建抗原-抗体亲和力排序模型。仓库不是原版 FLAb 的完整镜像；FLAb benchmark、比赛官方数据、论文材料和我们的建模代码已经按用途重新整理。
 
-本仓库为参赛工作目录，赛题为：**利用 AI 模型针对 Nipah 病毒 G 蛋白从头设计高亲和力中和抗体**。
+当前实现重点是 `FLAb/affinity_model` 中的通用亲和力模型：使用冻结 ESM2 提取抗体序列 embedding，再训练一个跨数据集共享的 MLP head，对同一可比较组内的抗体亲和力进行排序。
 
-初赛任务是对给定抗原-抗体对进行亲和力排序预测（Spearman 相关系数评分），复赛任务是提交最多 6 条真实可验证的新抗体序列。
+## Repository Layout
 
----
-
-## 目录结构
-
-```
+```text
 antibody/
-├── FLAb/                        # FLAb benchmark（来自 Graylab/FLAb）
-│   ├── data/binding/            # 80+ 抗体亲和力数据集
-│   ├── models/                  # 官方打分脚本（零样本）
-│   ├── score/                   # 官方已有结果（antiberty/esmif/iglm/mpnn/pyrosetta）
-│   ├── run_scoring_batch.py     # 【新增】批量打分脚本（见下）
-│   └── requirements_esm2.txt   # 【新增】ESM2 环境依赖
-├── docs/                        # 赛题解读与技术文档
-└── 第四届Bio-OS开源大赛数据/      # 官方提供的比赛数据集
-    ├── 初赛-序列数据/            # 22 组亲和力数据集 + proteinbase Nipah 数据
-    ├── 初赛-结构数据/            # SAbDab 结构数据库（2026-03-05 版本）
-    └── 初赛-纳米抗体数据/        # INDI2 + ANDD 纳米抗体数据集
+  README.md
+  .gitignore
+
+  FLAb/
+    train.py
+    requirements.txt
+    affinity_model/
+      config.py
+      data_loader.py
+      embeddings.py
+      dataset.py
+      losses.py
+      model.py
+      trainer.py
+      docs/
+        code_reference.md
+        code_reference_v1.md
+        code_reference_v2_1.md
+        code_reference_v3_plan.md
+    data/
+      flab_metadata.csv
+      flab_metadata.json
+    scripts/
+      run.slurm
+      run_zeroshot.slurm
+    results/                 # local only
+
+  competition_data/          # local only, not for GitHub
+    _Preliminary_SequenceData/
+    _Preliminary_StructureData/
+    _Preliminary_NanobodyData/
+    data/
+    models/
+    score/
+
+  references/
+    papers/
+    task_docs/
+
+  docs/
+    中文解读.md
+    lab.md
 ```
 
----
+## What Is Tracked
 
-## 已完成工作
+`FLAb/affinity_model` is the active modeling code. It contains the data loader, ESM2 embedding cache logic, feature construction, losses, MLP model, training loop, split strategy, and evaluation logic.
 
-### 1. 数据整理与分析
+`FLAb/data` should only keep lightweight metadata required by the loader, especially `flab_metadata.csv` and `flab_metadata.json`. Large raw benchmark CSVs, zipped datasets, generated embeddings, checkpoints, and result tables should stay local.
 
-- 梳理了 FLAb benchmark 的完整结构：80 个 binding 数据集，样本量从 5 到 190 万不等
-- 确认官方仓库缺失 `score_ft/`、`envs/`、`embedding_help.py`、`embedding_train.py` 等文件，`ft_scoring_*` 系列脚本无法直接运行
-- 从 git 历史（commit `81756d90^`）恢复了 `envs/` 下的 conda 环境配置文件
-- 识别出 `初赛-序列数据/22/proteinbase_all_data_28_01_2026.csv`：含 5253 条抗体数据，其中 3754 条针对 Nipah G 蛋白，242 条有 Strong binding 标注，包含 SPR 实验 Kd 值——**这是复赛靶标的直接参考数据**
+`competition_data` is a local archive of official competition files, moved FLAb official baseline scripts, and official score artifacts. It is useful for inspection and data mining, but it is too large and licensing-sensitive for normal GitHub commits.
 
-### 2. 基线分析
+`references` stores task documents and papers used during analysis. Large PDFs should be treated as local references unless redistribution is clearly allowed.
 
-统计了 FLAb 官方已有的零样本模型在 binding 任务上的表现：
+## Model Status
 
-| 模型 | 平均 Spearman | 中位 Spearman |
-|------|:---:|:---:|
-| IgLM | 0.174 | 0.233 |
-| AntiBERTy | 0.117 | 0.097 |
-| ESM-IF | 0.007 | 0.083 |
-| ProteinMPNN | -0.011 | 0.013 |
-| PyRosetta | -0.150 | -0.077 |
+### v1
 
-现有最强基线平均 Spearman 仅 0.17，竞争门槛较低。
+The first supervised affinity model used ESM2 embeddings and pairwise ranking losses, but it had a critical design problem: it trained separate task heads for different datasets. That made the validation score look better than it should and did not match the competition setting, where the model should produce a generally meaningful ranking rather than rely on per-dataset heads.
 
-### 3. ESM2 基线验证
+Other v1 issues included mixing `Kd`, `-logKd`, `IC50`, and other assay semantics too easily, creating tiny validation/test splits for small datasets, and merging datasets that were not physically comparable.
 
-在 `hie2023efficient_CoV2_S309_Kd`（n=20）上运行 ESM2-650M 零样本打分：
+### v2.1
 
-```
-Spearman = 0.514，p = 0.020
-```
+The current implementation trains one shared `AffinityMLP` head across eligible Kd-style data. The important constraints are:
 
-与已有模型对比：AntiBERTy（0.558）、IgLM（0.521）、**ESM2-650M（0.514）**，三者相近，远优于结构类模型。
+- use only accepted Kd affinity data by default;
+- keep each original compatible benchmark as a `compatible_group`;
+- construct RankNet/Hinge pairs only within the same `compatible_group`;
+- split train/validation/test by whole groups, not random rows;
+- support MSE as a baseline using group-normalized `label_z`;
+- use `chain_concat` by default: heavy-chain embedding concatenated with light-chain embedding;
+- evaluate Spearman per group, then report aggregate metrics.
 
-### 4. 新增工具脚本
+RankNet and hinge losses keep the original pair direction design. v2.1 does not add heavy-light difference vectors, product vectors, antigen attention, or MSA features.
 
-`run_scoring_batch.py`：统一批量打分脚本，替代官方零散的 `scoring_*.py`。
+### v3 Plan
 
-- 支持 ESM2 全系列（8M / 35M / 150M / 650M / 3B / 15B）
-- 自动处理 `.csv` 和 `.csv.zip` 格式
-- 每个数据集输出逐序列 perplexity 分数（`_perseq.csv`）+ 全局 Spearman 汇总（`summary.csv`）
-- 结果写入 `score_batch/`，不覆盖官方 `score/` 目录
-- 模型懒加载缓存，避免官方脚本中每条序列重复加载模型的低效问题
+v3 is currently a technical proposal, not implemented code. The planned direction is to add antigen context:
+
+- build an antigen registry from FLAb, competition data, SAbDab/ANDD/proteinbase, and external identifiers where needed;
+- add antigen protein embeddings when antigen sequence is available;
+- use homolog search and MSA-aware embeddings for protein antigens with enough sequence evidence;
+- handle non-protein antigens with separate molecular features and explicit type flags;
+- keep missing-antigen handling explicit instead of silently pretending every sample has the same context.
+
+See [code_reference_v3_plan.md](FLAb/affinity_model/docs/code_reference_v3_plan.md) for the detailed design.
+
+## Running
+
+Install dependencies in an environment with PyTorch, Transformers, pandas, NumPy, SciPy, scikit-learn, and tqdm. On the cluster, the intended environment name has been `esm2`.
+
+From the `FLAb` directory:
 
 ```bash
-# 安装依赖
-pip install -r requirements_esm2.txt
-
-# 快速测试（前50条）
-python run_scoring_batch.py --model esm2_650M --max_rows 50
-
-# 全量运行
-nohup python run_scoring_batch.py --model esm2_650M esm2_3B > log_scoring.txt 2>&1 &
-```
-
----
-
-### 5. 有监督训练框架
-
-`FLAb/train.py`：ESM2 + 共享 MLP head + Pairwise Ranking Loss / MSE 的完整训练脚本。
-
-核心设计：
-- **Backbone**：ESM2-650M（冻结），提取 per-protein mean pooling embedding（1280维）
-- **Head**：一个跨数据集共享的 MLP（1280→256→1），GELU 激活 + Dropout(0.2)
-- **Loss**：RankNet / Pairwise Hinge Ranking Loss（直接优化排序，与 Spearman 评分对齐），同时保留 MSE baseline
-- **训练范式**：Global training。所有合格 Kd 数据共同训练一个共享 head，不再为每个数据集单独训练任务头
-- **数据约束**：默认只使用真实 Kd 类数据；跳过 predicted Kd、bind/no bind、IC50、EC50、ADCC 等语义不同的标签
-- **Pair 构造**：只在同一个 `compatible_group` 内构造排序对，避免跨抗原、跨 assay、跨单位强行比较
-- **MSE 标签**：MSE 回归组内标准化 `label_z`，不直接回归原始 Kd / -logKd
-- **评估方式**：按 `compatible_group` 整组划分 train/val/test，并按组计算 Spearman 后汇总
-- **缓存机制**：ESM2 embedding 缓存到磁盘（只算一次，后续训练直接读取）
-
-```bash
-# 步骤1：提取并缓存所有 embedding（只需跑一次，GPU 密集）
 cd FLAb
 python train.py --mode embed
-
-# 步骤2：训练 + 评估（从缓存读 embedding，CPU/GPU 均可）
 python train.py --mode train
-
-# 一键全流程
-nohup python train.py --mode all > log_train.txt 2>&1 &
 ```
 
----
+Or run the full pipeline:
 
-## 下一步计划
+```bash
+cd FLAb
+python train.py --mode all
+```
 
-- [ ] 在所有 binding 数据集上完成 ESM2-650M 零样本基线（`run_scoring_batch.py`）
-- [ ] 完成有监督训练并对比 zero-shot 基线（预期提升显著）
-- [ ] 分析 proteinbase Nipah 数据，提取复赛候选序列特征
-- [ ] 考虑用 ISM（抗体专用语言模型）替换 ESM2 backbone
+Useful options:
+
+```bash
+python train.py --mode all --loss ranknet
+python train.py --mode all --loss mse hinge ranknet
+python train.py --mode train --model_feature_mode chain_concat
+python train.py --mode train --model_feature_mode scfv_mean
+python train.py --mode train --checkpoint_metric val_weighted_spearman
+python train.py --mode train --min_label_diff 0.1
+```
+
+Cluster scripts live in `FLAb/scripts`. They should be checked against the current cluster module/conda setup before submission.
+
+## Documentation
+
+The code quality documents are split to keep Markdown files manageable:
+
+- [code_reference.md](FLAb/affinity_model/docs/code_reference.md): index page;
+- [code_reference_v1.md](FLAb/affinity_model/docs/code_reference_v1.md): v1 logic and known problems;
+- [code_reference_v2_1.md](FLAb/affinity_model/docs/code_reference_v2_1.md): current v2.1 implementation notes;
+- [code_reference_v3_plan.md](FLAb/affinity_model/docs/code_reference_v3_plan.md): antigen-aware v3 proposal.
+
+Task materials are under `references/task_docs`, including the moved `TASKS.md`.
+
+## GitHub Hygiene
+
+Do not commit local official data, raw benchmark archives, generated embeddings, model weights, or result folders. Before staging, check:
+
+```bash
+git status --short
+git ls-files | rg "competition_data|score/|results/|\\.zip|\\.pdf|\\.csv\\.zip|\\.pt|\\.pth|\\.npy|\\.npz|\\.pkl"
+```
+
+Recommended local-only paths and file types:
+
+```text
+competition_data/
+FLAb/results/
+FLAb/score/
+FLAb/cache/
+*.csv
+*.csv.zip
+*.tsv
+*.zip
+*.gz
+*.pt
+*.pth
+*.npy
+*.npz
+*.pkl
+*.pdf
+```
+
+`FLAb/data/flab_metadata.csv` is an exception because the loader uses it to identify assay types and filter Kd-compatible datasets.
+
+For clean history, keep commits separated:
+
+```text
+1. directory cleanup and ignore rules
+2. affinity_model code changes
+3. documentation updates
+4. experiment results summaries
+```
+
+Avoid combining data movement, model changes, and documentation rewrites in one commit.

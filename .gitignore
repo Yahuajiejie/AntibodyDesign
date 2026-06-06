@@ -8,6 +8,7 @@
 *.gz
 *.tar.gz
 *.csv
+!flab_metadata*
 
 # 这是数据索引表，不是大数据集；data_loader 默认依赖它判断 Kd/IC50/EC50 等 assay 类型。
 !FLAb/data/flab_metadata.csv
