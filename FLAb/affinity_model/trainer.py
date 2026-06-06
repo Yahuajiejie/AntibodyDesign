@@ -70,42 +70,143 @@ def flatten_datasets(embedded_datasets: dict[str, pd.DataFrame]) -> pd.DataFrame
     return all_df
 
 
+def _select_groups_near_target(
+    group_sizes: pd.Series,
+    target_rows: int,
+    forbidden_groups: set[str],
+    min_groups: int,
+) -> set[str]:
+    """
+    从候选 compatible_group 中挑一组，使总样本数尽量接近 target_rows。
+
+    约束：
+      - forbidden_groups 里的组不能再选，避免 val/test 重叠；
+      - 优先不选超过 target_rows * MAX_EVAL_GROUP_SIZE_RATIO 的超大组；
+      - 至少选 min_groups 个组，除非候选组数量本身不足。
+
+    实现方法：
+      用一个小型动态规划做 subset search。状态是 (当前总行数, 当前组数)，
+      值是已选择的组名 tuple。这样比简单随机切分更能控制样本数比例。
+    """
+    available = [
+        (str(name), int(size))
+        for name, size in group_sizes.items()
+        if str(name) not in forbidden_groups
+    ]
+    if not available:
+        return set()
+
+    # 这一步主要是过滤掉数据量太大的单个数据聚集
+    max_eval_group_size = max(
+        cfg.MIN_GROUP_SIZE,
+        int(round(target_rows * cfg.MAX_EVAL_GROUP_SIZE_RATIO)),
+    )
+    small_enough = [(name, size) for name, size in available if size <= max_eval_group_size]
+    if len(small_enough) >= min_groups:
+        available = small_enough
+
+    rng = np.random.default_rng(cfg.SEED + len(forbidden_groups))
+    rng.shuffle(available)
+
+    # 搜索范围不需要无限大；超过目标 2 倍的组合通常不是好的 val/test 切分。
+    largest_group = max(size for _, size in available)
+    search_cap = max(target_rows * 2, target_rows + largest_group)
+    # 相较于上一步，这一步则主要是保证合并后的数据集总量不太大
+
+    states: dict[tuple[int, int], tuple[str, ...]] = {(0, 0): ()}
+    # 动态规划，用的是布尔动态规划，即计算当前的数据集自由组合，可以构造出多少种大小不同的子集
+    # 最重要的数据结构是字典，键是（数据总量，数据集数目）值是具体包含哪些数据集
+    for group_name, group_size in available:
+        updates = {}
+        for (row_sum, count), chosen in states.items():
+            new_sum = row_sum + group_size
+            if new_sum > search_cap:
+                continue
+            new_key = (new_sum, count + 1)
+            if new_key not in states and new_key not in updates:
+                updates[new_key] = chosen + (group_name,)
+        states.update(updates)
+
+    valid = [
+        (row_sum, count, chosen)
+        for (row_sum, count), chosen in states.items()
+        if count >= min_groups and row_sum > 0
+    ]
+    if not valid:
+        # 极端情况下候选组太少，就退回到按大小从小到大凑够 min_groups。
+        available_sorted = sorted(available, key=lambda item: item[1])
+        return {name for name, _ in available_sorted[:max(1, min_groups)]}
+
+    best_rows, _, best_groups = min(
+        valid,
+        key=lambda item: (
+            abs(item[0] - target_rows),  # 样本数越接近目标越好
+            item[1],                     # 同样接近时，用更少组，评估更清晰
+            item[0],                     # 再同样时，偏向稍小评估集
+        ),
+    )
+    # min返回的是可迭代容器中，key及其函数值最小的物体
+    print(
+        f"  [split search] target={target_rows:,}, selected={best_rows:,}, "
+        f"groups={len(best_groups)}"
+    )
+    return set(best_groups)
+
+
 def split_by_group(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    按 compatible_group 整组划分 train/val/test。
+    按 compatible_group 整组划分 train/val/test，并尽量平衡样本数。
 
     为什么不用随机行划分：
       随机行划分会让同一个 benchmark 的相近突变体同时出现在训练和测试中，
       容易得到不真实的高 Spearman。按组划分更接近“未知数据集/未知抗原”
       的泛化场景。
+
+    为什么不只按 group 数量划分：
+      FLAb 中不同 group 的样本数差异很大。只按 group 数切分可能导致
+      train 很小、val/test 很大，或者评估集被单个超大 group 主导。
+      因此这里用 group 作为不可拆分单位，但按样本数接近 80/10/10 来选组。
     """
-    group_names = np.array(sorted(df[cfg.GROUP_COL].astype(str).unique()))
-    if len(group_names) < 3:
+    group_sizes = df.groupby(cfg.GROUP_COL).size().sort_index()
+    group_sizes.index = group_sizes.index.astype(str)
+    n_groups = len(group_sizes)
+    if n_groups < 3:
         raise ValueError("compatible_group 少于 3 个，无法按组划分 train/val/test")
 
-    rng = np.random.default_rng(cfg.SEED)
-    rng.shuffle(group_names)
+    total_rows = len(df)
+    target_val_rows = max(cfg.MIN_GROUP_SIZE, int(round(total_rows * cfg.VAL_RATIO)))
+    target_test_rows = max(cfg.MIN_GROUP_SIZE, int(round(total_rows * cfg.TEST_RATIO)))
+    min_eval_groups = min(cfg.MIN_EVAL_GROUPS, max(1, (n_groups - 1) // 2))
 
-    n_groups = len(group_names)
-    n_test = max(1, int(round(n_groups * cfg.TEST_RATIO)))
-    n_val = max(1, int(round(n_groups * cfg.VAL_RATIO)))
-    if n_val + n_test >= n_groups:
-        n_val = 1
-        n_test = 1
+    test_groups = _select_groups_near_target(
+        group_sizes=group_sizes,
+        target_rows=target_test_rows,
+        forbidden_groups=set(),
+        min_groups=min_eval_groups,
+    )
+    val_groups = _select_groups_near_target(
+        group_sizes=group_sizes,
+        target_rows=target_val_rows,
+        forbidden_groups=test_groups,
+        min_groups=min_eval_groups,
+    )
+    train_groups = set(group_sizes.index) - val_groups - test_groups
 
-    test_groups = set(group_names[:n_test])
-    val_groups = set(group_names[n_test:n_test + n_val])
-    train_groups = set(group_names[n_test + n_val:])
+    if not train_groups:
+        raise ValueError("group split 后训练集为空，请降低 VAL_RATIO/TEST_RATIO")
 
     train_df = df[df[cfg.GROUP_COL].astype(str).isin(train_groups)].reset_index(drop=True)
     val_df = df[df[cfg.GROUP_COL].astype(str).isin(val_groups)].reset_index(drop=True)
     test_df = df[df[cfg.GROUP_COL].astype(str).isin(test_groups)].reset_index(drop=True)
 
+    train_ratio = len(train_df) / total_rows
+    val_ratio = len(val_df) / total_rows
+    test_ratio = len(test_df) / total_rows
     print(
         "[划分] "
-        f"train={len(train_df):,} 条/{len(train_groups)} 组，"
-        f"val={len(val_df):,} 条/{len(val_groups)} 组，"
-        f"test={len(test_df):,} 条/{len(test_groups)} 组"
+        f"train={len(train_df):,} 条/{len(train_groups)} 组({train_ratio:.1%})，"
+        f"val={len(val_df):,} 条/{len(val_groups)} 组({val_ratio:.1%})，"
+        f"test={len(test_df):,} 条/{len(test_groups)} 组({test_ratio:.1%})"
     )
     return train_df, val_df, test_df
 

@@ -76,6 +76,8 @@ DROPOUT = 0.2
 MAX_PAIRS_PER_GROUP = 10000
 MIN_GROUP_SIZE = 5
 ALLOWED_ASSAY_FAMILIES = {"kd"}
+MIN_EVAL_GROUPS = 3
+MAX_EVAL_GROUP_SIZE_RATIO = 1.5
 GROUP_COL = "compatible_group"
 RANK_LABEL_COL = "label"
 MSE_LABEL_COL = "label_z"
@@ -85,6 +87,8 @@ MSE_LABEL_COL = "label_z"
 
 - `ALLOWED_ASSAY_FAMILIES = {"kd"}` 保证默认不混入 IC50/EC50。
 - `MIN_GROUP_SIZE = 5` 对应“至少 5 条数据才做可靠排序评估”的要求。
+- `MIN_EVAL_GROUPS = 3` 要求 val/test 至少包含几个 group，避免只评估一个数据集。
+- `MAX_EVAL_GROUP_SIZE_RATIO = 1.5` 表示超过评估目标样本数 1.5 倍的超大 group 默认留给 train。
 - `GROUP_COL = "compatible_group"` 是禁止跨 assay 构造 pair 的关键。
 - `MSE_LABEL_COL = "label_z"` 保证 MSE 不直接回归原始 Kd。
 
@@ -1352,6 +1356,62 @@ pd.DataFrame
 
 - 这里只拼接，不改标签、不合并 group。
 
+### `_select_groups_near_target(group_sizes, target_rows, forbidden_groups, min_groups)`
+
+自变量：
+
+```text
+group_sizes: pd.Series
+target_rows: int
+forbidden_groups: set[str]
+min_groups: int
+```
+
+`group_sizes` 是每个 `compatible_group` 的样本数。
+
+例子：
+
+```text
+garbinski2023_kd                         81
+phillips2021binding_cr9114_h3_kd      32767
+adams2017measuring_...                11052
+```
+
+`target_rows` 是希望选出来的 group 总共有多少行。
+
+例子：
+
+```text
+总样本 88728，TEST_RATIO=0.1
+target_rows ≈ 8873
+```
+
+`forbidden_groups` 是不能再选的组。比如已经选进 test 的组，在选 val 时就放进 forbidden，防止 val/test 重叠。
+
+`min_groups` 是至少要选几个 group，避免 val/test 只有一个 group 导致评估太偶然。
+
+输出：
+
+```text
+set[str]
+```
+
+含义：被选中的 group 名称集合。
+
+逻辑：
+
+1. 从所有 group 中去掉 `forbidden_groups`；
+2. 优先过滤掉超过 `target_rows * MAX_EVAL_GROUP_SIZE_RATIO` 的超大 group；
+3. 用动态规划搜索 group 子集；
+4. 选择“总样本数最接近 target_rows”的那个子集；
+5. 如果极端情况下找不到，就退回到选最小的几个 group。
+
+质检点：
+
+- 这个函数仍然不会拆开 group；
+- 它只是决定“哪些完整 group 放进 val/test”；
+- 它解决的是“按 group 数切分导致样本数比例失衡”的问题。
+
 ### `split_by_group(df)`
 
 自变量：
@@ -1382,34 +1442,49 @@ tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]
 
 这三张表按 `compatible_group` 整组划分。同一个 group 只会出现在其中一张表里。
 
+划分目标：
+
+```text
+train 约 80% 样本
+val   约 10% 样本
+test  约 10% 样本
+```
+
+注意：这里的 80/10/10 是按“样本数”尽量接近，不是按“group 数”机械切分。
+
 逻辑：
 
 1. 取所有 `compatible_group`；
-2. 用 numpy 随机打乱组名；
-3. 按组数切出 train/val/test；
-4. 返回三张 DataFrame。
+2. 统计每个 group 有多少行样本；
+3. 先为 test 搜索一组 group，使样本数尽量接近 `总样本数 * TEST_RATIO`；
+4. 再为 val 搜索一组不和 test 重叠的 group，使样本数尽量接近 `总样本数 * VAL_RATIO`；
+5. 剩下的 group 全部进入 train；
+6. 返回三张 DataFrame。
 
 关键点：
 
 ```python
-test_groups = set(group_names[:n_test])
-val_groups = set(group_names[n_test:n_test + n_val])
-train_groups = set(group_names[n_test + n_val:])
+test_groups = _select_groups_near_target(...)
+val_groups = _select_groups_near_target(..., forbidden_groups=test_groups)
+train_groups = set(group_sizes.index) - val_groups - test_groups
 ```
 
 质检点：
 
 - 同一个 compatible_group 不会同时出现在 train 和 test；
 - 这是比随机行划分更严格的泛化测试。
+- 新版本不只按 group 个数切分，而是尽量让 train/val/test 的样本数接近 80/10/10。
+- 超过评估目标样本数 `MAX_EVAL_GROUP_SIZE_RATIO` 倍的超大组默认不进入 val/test，更倾向留在 train。
 
 外部库用法：
 
 ```python
-rng = np.random.default_rng(cfg.SEED)
-rng.shuffle(group_names)
+df.groupby(cfg.GROUP_COL).size()
+np.random.default_rng(cfg.SEED)
 ```
 
-固定 seed 保证划分可复现。
+- `groupby(...).size()` 统计每个 group 的样本数；
+- 固定 seed 保证候选组合搜索可复现。
 
 ### `_predict_scores(model, df)`
 

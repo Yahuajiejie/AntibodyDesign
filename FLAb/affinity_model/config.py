@@ -56,6 +56,9 @@ class Config:
 
     # Group split 表示按 compatible_group 整组划分，避免同一 benchmark
     # 的标签同时出现在训练集和测试集里。
+    MIN_EVAL_GROUPS = 3  # val/test 至少各保留几个组；数据集组太少时会自动降低
+    MAX_EVAL_GROUP_SIZE_RATIO = 1.5
+    # val/test 选择组时，默认不选超过目标样本数 1.5 倍的超大组；这些组更适合留在 train。
     GROUP_COL        = "compatible_group"   # 在每个抗原-抗体对的csv总表里，Kd/IC50可以直接进行比较的数据点被分为一组，它们的组号被记录在GROUP_COL指导的列
     RANK_LABEL_COL   = "label"      # 排序用标签：方向已统一，越大亲和力越强
     MSE_LABEL_COL    = "label_z"    # MSE 用组内 z-score 归一化，避免不同量纲支配训练

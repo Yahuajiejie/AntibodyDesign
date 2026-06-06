@@ -49,16 +49,18 @@ class PairwiseRankingDataset(Dataset):
         参数：
           df:                  含 embedding、label、compatible_group 的 DataFrame
           label_col:           用来判断强弱的标签列，值越大越强
-          group_col:           可比较组列名
+          group_col:           分组信息所在列的名称
           max_pairs_per_group: 每个组最多采样多少个 pair，防止 O(N²) 爆炸
           min_label_diff:      label 差必须大于该阈值才构造 pair
           seed:                随机采样 pair 的种子
         """
         self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
+        # stack 堆叠，就是简单的把一堆向量堆成二维数组，而不是把他们弄成栈
         self.labels = df[label_col].values.astype(np.float32)
         self.groups = df[group_col].astype(str).values
 
         rng = np.random.default_rng(seed)
+        # random number generater
         pairs: list[tuple[int, int]] = []
         skipped_groups = 0
 
