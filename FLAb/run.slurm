@@ -27,7 +27,11 @@
 
 set -euo pipefail
 
+	# 一旦脚本出错，立刻停止执行
+
 trap 'echo "[ERROR] 作业在第 ${LINENO} 行失败，退出码=$?；请查看上方日志定位原因。" >&2' ERR
+
+	# ERR = return非零。trap捕获信号，并执行''里的脚本
 
 ENV_NAME="${CONDA_ENV_NAME:-esm2}"
 CUDA_MODULE="${CUDA_MODULE:-cuda/12.6}"
@@ -50,6 +54,8 @@ echo "========================================"
 # ── 定位 FLAb 项目目录 ─────────────────────────────────────────────
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 
+	# 如果 SLURM_SUBMIT_DIR 存在就将 SUBMIT_DIR 设置为 SLURM_SUBMIT_DIR，否则设置为 pwd
+
 if [[ -n "${FLAB_PROJECT_DIR:-}" ]]; then
     PROJECT_DIR="${FLAB_PROJECT_DIR}"
 elif [[ -f "${SUBMIT_DIR}/train.py" && -d "${SUBMIT_DIR}/affinity_model" ]]; then
@@ -63,6 +69,8 @@ else
     exit 2
 fi
 
+	# [[]] 代表一个条件 -n 测试是否为空 -f file是否存在 -d directory是否存在
+
 cd "${PROJECT_DIR}"
 mkdir -p logs results/affinity_model cache/embeddings cache/huggingface cache/torch
 
@@ -74,6 +82,8 @@ if [[ ! -f "${MODULE_INIT}" ]]; then
     echo "[FATAL] 找不到 module 初始化脚本: ${MODULE_INIT}" >&2
     exit 3
 fi
+	# MODULE_INIT 代表 module 初始化脚本路径
+	# source 用于在当前 shell 环境中执行指定文件中的命令。与直接运行脚本不同，source 命令不会创建新的子 shell，而是在当前 shell 中直接执行文件内容。
 
 source "${MODULE_INIT}"
 
@@ -83,6 +93,7 @@ if ! command -v module >/dev/null 2>&1; then
 fi
 
 module purge || true
+	# 上面的指令先清除 当前已有的冲突模块，下面的指令再加载，所需的CUDA版本
 if [[ -n "${CUDA_MODULE}" ]]; then
     module load "${CUDA_MODULE}"
 fi
