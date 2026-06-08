@@ -18,11 +18,11 @@ FLAB_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if FLAB_ROOT not in sys.path:
     sys.path.insert(0, FLAB_ROOT)
 
-from AffinityMLPSimplified.config import cfg
-from AffinityMLPSimplified.data_loader import load_all_datasets
-from AffinityMLPSimplified.embeddings import embed_all_datasets, load_cached_datasets
-from AffinityMLPSimplified.losses import LOSS_REGISTRY
-from AffinityMLPSimplified.trainer import run_all_benchmarks
+from model.config import cfg
+from model.data_loader import load_all_datasets
+from model.embeddings import embed_all_datasets, load_cached_datasets
+from model.losses import LOSS_REGISTRY
+from model.trainer import run_all_benchmarks
 
 
 def set_seed(seed: int = cfg.SEED) -> None:
