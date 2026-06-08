@@ -1,5 +1,5 @@
 """
-sequence_encoders.py — v3 可插拔序列 encoder
+encoders/sequence.py — 可插拔序列 encoder
 
 这个模块负责把氨基酸序列转成固定长度 embedding。它支持：
   - ESM2 这类通用蛋白模型；
@@ -20,8 +20,8 @@ from typing import Iterable
 
 import numpy as np
 
-from .antigen_schema import clean_text, normalize_antigen_sequence
-from .config import SequenceEncoderSpec, get_encoder_spec
+from ..antigen_schema import clean_text, normalize_antigen_sequence
+from ..config import SequenceEncoderSpec, get_encoder_spec
 
 
 def sequence_hash(sequence: str, encoder_name: str) -> str:
@@ -318,4 +318,3 @@ def get_or_compute_sequence_embeddings(
             result[seq] = emb
 
     return result
-

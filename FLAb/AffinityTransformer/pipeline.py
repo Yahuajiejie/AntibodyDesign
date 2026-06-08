@@ -22,12 +22,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .antibody_embeddings import embed_antibody_dataframe
-from .antigen_context_dataset import (
+from .embeddings.antibody import embed_antibody_dataframe
+from .data.context import (
     build_antigen_context_feature_matrix,
     has_official_antigen_sequence,
 )
-from .antigen_embeddings import (
+from .embeddings.antigen import (
     AntigenEmbeddingManifest,
     embed_antigen_msa,
     embed_antigen_single,
@@ -247,4 +247,3 @@ def build_v3_feature_matrix(
         allow_missing=allow_missing_antigen_context,
         context_policy=cfg.ANTIGEN_CONTEXT_POLICY,
     )
-

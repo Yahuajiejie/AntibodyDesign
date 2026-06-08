@@ -1,5 +1,5 @@
 """
-antigen_context_dataset.py — v3 抗体-抗原上下文特征矩阵
+data/context.py — 抗体-抗原上下文特征矩阵
 
 该模块不定义 PyTorch Dataset，也不接入 v2.1 trainer。它只负责把已有抗体
 embedding 与 antigen_registry/cache 中的抗原上下文拼接成 numpy feature matrix。
@@ -12,15 +12,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .antigen_embeddings import (
+from ..embeddings.antigen import (
     MSA_ESM1B_DIM,
     SINGLE_ESM2_DIM,
     has_cached_embedding,
     load_antigen_embedding_cache,
     zero_embedding,
 )
-from .antigen_schema import ANTIGEN_TYPES, clean_text, coerce_bool
-from .config import cfg
+from ..antigen_schema import ANTIGEN_TYPES, clean_text, coerce_bool
+from ..config import cfg
 
 
 ANTIGEN_TYPE_ORDER = [

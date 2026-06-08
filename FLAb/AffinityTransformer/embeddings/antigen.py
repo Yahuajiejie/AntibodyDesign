@@ -1,5 +1,5 @@
 """
-antigen_embeddings.py — v3 抗原 embedding 缓存
+embeddings/antigen.py — 抗原 embedding 缓存
 
 这个模块负责把 antigen_registry 中的抗原上下文转成可训练特征。
 当前实现重点是单序列蛋白抗原 ESM2 embedding 的缓存协议；MSA、配体和糖
@@ -16,15 +16,15 @@ from typing import Any
 
 import numpy as np
 
-from .antigen_schema import (
+from ..antigen_schema import (
     EMBEDDING_TYPES,
     PROTEIN_LIKE_TYPES,
     clean_text,
     normalize_antigen_sequence,
     sequence_hash,
 )
-from .config import cfg, get_encoder_spec
-from .sequence_encoders import HuggingFaceSequenceEncoder
+from ..config import cfg, get_encoder_spec
+from ..encoders.sequence import HuggingFaceSequenceEncoder
 
 
 SINGLE_ESM2_DIM = 1280
@@ -260,7 +260,7 @@ def embed_antigen_msa(
     if not msa_path:
         raise ValueError(f"{antigen_id} 缺少 msa_cache_path")
 
-    from .msa_embeddings import embed_msa_file
+    from .msa import embed_msa_file
 
     return embed_msa_file(
         msa_path=msa_path,

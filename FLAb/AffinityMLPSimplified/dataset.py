@@ -1,96 +1,153 @@
 """
 dataset.py — PyTorch Dataset 类定义
 
-包含两种 Dataset：
-  1. PairwiseRankingDataset：训练用，每个样本是一对序列（高亲和力 vs 低亲和力）
-  2. ScoringDataset：验证/测试用，每个样本是单条序列及其 fitness 标签
+这里包含三种 Dataset：
+
+  1. PairwiseRankingDataset
+     用于 RankNet / Ranking Hinge。每个样本是一对可比较抗体：
+     label_pos > label_neg，并且二者必须来自同一个 compatible_group。
+
+  2. PointwiseRegressionDataset
+     用于 MSE。每个样本是一条序列及其组内标准化标签 label_z。
+
+  3. ScoringDataset
+     用于验证/测试。每个样本是一条序列及其排序标签 label。
 """
+
+from __future__ import annotations
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .config import cfg
+
 
 class PairwiseRankingDataset(Dataset):
     """
-    训练集用的 Dataset。
+    Pairwise 排序训练集。
 
-    核心思路：
-      亲和力预测本质上是一个排序问题——我们不需要预测绝对 Kd 值，
-      只需要让模型判断"哪个抗体比哪个好"。
+    关键约束：
+      只在同一个 compatible_group 内构造 pair。这样 Kd、IC50、不同抗原、
+      不同实验体系之间不会被强行比较。
 
-      因此构造所有满足 fitness_A > fitness_B 的有序对 (A, B)，
-      训练目标是让 score_A > score_B + margin。
-
-    数据量分析：
-      N 条序列最多产生 O(N²) 个对，对小数据集（<5000 条）完全可接受。
-      实际对数 = 满足 fitness_i > fitness_j 的 (i,j) 数量。
+    为什么存索引而不是直接存 embedding：
+      embedding 维度是 1280，如果每个 pair 都复制两份 embedding，会浪费大量内存。
+      这里保存全局 embedding 矩阵和 pair 的行索引，__getitem__ 时再取。
     """
 
-    def __init__(self, df):
+    def __init__(
+        self,
+        df,
+        label_col: str = cfg.RANK_LABEL_COL,
+        group_col: str = cfg.GROUP_COL,
+        max_pairs_per_group: int = cfg.MAX_PAIRS_PER_GROUP,
+        min_label_diff: float = cfg.MIN_LABEL_DIFF,
+        seed: int = cfg.SEED,
+    ):
         """
         参数：
-          df: 含 'embedding'（numpy array）和 'fitness'（float）列的 DataFrame
+          df:                  含 embedding、label、compatible_group 的 DataFrame
+          label_col:           用来判断强弱的标签列，值越大越强
+          group_col:           分组信息所在列的名称
+          max_pairs_per_group: 每个组最多采样多少个 pair，防止 O(N²) 爆炸
+          min_label_diff:      label 差必须大于该阈值才构造 pair
+          seed:                随机采样 pair 的种子
         """
-        # 将所有 embedding 堆叠成矩阵，形状 [N, 1280]
-        embeddings = np.stack(df["embedding"].values).astype(np.float32)
-        fitness    = df["fitness"].values.astype(np.float32)
+        self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
+        # stack 堆叠，就是简单的把一堆向量堆成二维数组，而不是把他们弄成栈
+        self.labels = df[label_col].values.astype(np.float32)
+        self.groups = df[group_col].astype(str).values
 
-        N = len(df)
-        # 存储 (emb_正样本, emb_负样本, fitness_正, fitness_负)
-        # Hinge/RankNet 只用前两个，MSE 需要全部四个
-        self.pairs = []
+        rng = np.random.default_rng(seed)
+        # random number generater
+        pairs: list[tuple[int, int]] = []
+        skipped_groups = 0
 
-        # 枚举所有有序对 (i, j)，i 的亲和力高于 j
-        for i in range(N):
-            for j in range(N):
-                if i != j and fitness[i] > fitness[j]:
-                    self.pairs.append((
-                        embeddings[i],        # 正样本 embedding
-                        embeddings[j],        # 负样本 embedding
-                        np.float32(fitness[i]),  # 正样本真实 fitness（MSE 需要）
-                        np.float32(fitness[j]),  # 负样本真实 fitness（MSE 需要）
-                    ))
+        for group_name in sorted(set(self.groups)):
+            group_indices = np.where(self.groups == group_name)[0]
+            group_labels = self.labels[group_indices]
 
-        print(f"  [PairwiseDataset] {N} 条序列 → {len(self.pairs)} 个训练对")
+            if len(group_indices) < 2 or len(np.unique(group_labels)) < 2:
+                skipped_groups += 1
+                continue
+
+            local_pairs = [
+                (int(group_indices[i]), int(group_indices[j]))
+                for i in range(len(group_indices))
+                for j in range(len(group_indices))
+                if group_labels[i] - group_labels[j] > min_label_diff
+            ]
+
+            if len(local_pairs) > max_pairs_per_group:
+                chosen = rng.choice(
+                    len(local_pairs),
+                    size=max_pairs_per_group,
+                    replace=False,
+                )
+                local_pairs = [local_pairs[k] for k in chosen]
+
+            pairs.extend(local_pairs)
+
+        self.pairs = pairs
+        print(
+            f"  [PairwiseDataset] {len(df)} 条序列，{len(set(self.groups))} 个组 "
+            f"→ {len(self.pairs):,} 个训练对"
+            + (f"，跳过 {skipped_groups} 个不可排序组" if skipped_groups else "")
+        )
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, idx):
-        # 返回 (正样本 emb, 负样本 emb, 正样本 fitness, 负样本 fitness)
-        emb_pos, emb_neg, fit_pos, fit_neg = self.pairs[idx]
+        pos_idx, neg_idx = self.pairs[idx]
         return (
-            torch.tensor(emb_pos),
-            torch.tensor(emb_neg),
-            torch.tensor(fit_pos),
-            torch.tensor(fit_neg),
+            torch.tensor(self.embeddings[pos_idx]),
+            torch.tensor(self.embeddings[neg_idx]),
+            torch.tensor(self.labels[pos_idx]),
+            torch.tensor(self.labels[neg_idx]),
         )
 
 
-class ScoringDataset(Dataset):
+class PointwiseRegressionDataset(Dataset):
     """
-    验证集 / 测试集用的 Dataset。
+    MSE 训练集。
 
-    每个样本是单条序列的 embedding + fitness 标签，
-    用于评估模型预测分数与真实亲和力的 Spearman 相关性。
+    MSE 不直接回归原始 Kd 或 -logKd，而回归组内标准化后的 label_z。
+    这让不同实验体系的动态范围不会主导损失。
     """
 
-    def __init__(self, df):
-        """
-        参数：
-          df: 含 'embedding' 和 'fitness' 列的 DataFrame
-        """
-        # 将所有 embedding 堆叠，fitness 转为 float32
+    def __init__(self, df, target_col: str = cfg.MSE_LABEL_COL):
         self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
-        self.fitness    = df["fitness"].values.astype(np.float32)
+        self.targets = df[target_col].values.astype(np.float32)
 
     def __len__(self):
         return len(self.embeddings)
 
     def __getitem__(self, idx):
-        # 返回 (embedding tensor, fitness tensor)
         return (
             torch.tensor(self.embeddings[idx]),
-            torch.tensor(self.fitness[idx]),
+            torch.tensor(self.targets[idx]),
+        )
+
+
+class ScoringDataset(Dataset):
+    """
+    验证集 / 测试集用 Dataset。
+
+    评估时只需要 embedding 和真实排序标签；compatible_group 由 trainer
+    保留在 DataFrame 中，用于按组计算 Spearman。
+    """
+
+    def __init__(self, df, label_col: str = cfg.RANK_LABEL_COL):
+        self.embeddings = np.stack(df["embedding"].values).astype(np.float32)
+        self.labels = df[label_col].values.astype(np.float32)
+
+    def __len__(self):
+        return len(self.embeddings)
+
+    def __getitem__(self, idx):
+        return (
+            torch.tensor(self.embeddings[idx]),
+            torch.tensor(self.labels[idx]),
         )

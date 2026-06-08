@@ -1,5 +1,5 @@
 """
-antibody_embeddings.py — v3 抗体 encoder 与 embedding cache
+embeddings/antibody.py — 抗体 encoder 与 embedding cache
 
 v3 不绑定 ESM2。抗体侧 encoder 可选择：
   - ESM2：heavy/light 分别编码后拼接；
@@ -14,9 +14,9 @@ import os
 import numpy as np
 import pandas as pd
 
-from .antigen_schema import clean_text, normalize_antigen_sequence
-from .config import cfg, get_encoder_spec
-from .sequence_encoders import (
+from ..antigen_schema import clean_text, normalize_antigen_sequence
+from ..config import cfg, get_encoder_spec
+from ..encoders.sequence import (
     HuggingFaceSequenceEncoder,
     get_or_compute_sequence_embeddings,
     load_cached_sequence_embedding,
@@ -173,4 +173,3 @@ def build_antibody_feature_matrix(
         return np.stack(df["antibody_embedding"].values).astype(np.float32)
 
     raise ValueError("layout 必须是 separate_chains 或 paired_chains")
-

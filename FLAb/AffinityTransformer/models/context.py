@@ -1,5 +1,5 @@
 """
-antigen_context_model.py — v3 抗原上下文模型
+models/context.py — 抗原上下文模型
 
 这个模块定义 v3 模型结构，但不会替换 AffinityMLP(v1/v2)。
 

@@ -1,5 +1,5 @@
 """
-msa_builder.py — v3 MSA cache 构建与质检工具
+msa/builder.py — MSA cache 构建与质检工具
 
 本模块只处理本地 FASTA/A3M 文件，不下载数据库，也不在导入时调用外部程序。
 外部工具如 MAFFT/HHblits/ColabFold 应作为离线预处理运行。
@@ -11,7 +11,7 @@ import os
 import random
 from typing import Iterable
 
-from .antigen_schema import normalize_antigen_sequence
+from ..antigen_schema import normalize_antigen_sequence
 from .homolog_search import FastaRecord
 
 

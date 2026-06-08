@@ -147,10 +147,10 @@ created_at
 ```text
 FLAb/data/binding/*.csv
 FLAb/data/flab_metadata.csv
-TASKS.md
 proteinbase_all_data_28_01_2026.csv
 ANDD.xlsx
 SAbDab summary / PDB
+TASKS.md(可能有用)
 ```
 
 输出：
@@ -444,7 +444,7 @@ score = MLP(feature)
 - 投影层必须记录输入维度；
 - 对没有 MSA 的抗原，使用 mask/flag，而不是静默零向量。
 
-### v3.2：糖蛋白、小分子和糖抗原分支
+### v3.2：糖蛋白、小分子和糖抗原分支（先别急着做v3.2只提取蛋白，不提取糖链信息）
 
 糖蛋白：
 
@@ -573,7 +573,7 @@ antigen_heldout_weighted_spearman
 
 ## 七、v3 计划新增模块
 
-### `antigen_registry.py`
+### `registry/core.py`
 
 计划函数：
 
@@ -589,7 +589,7 @@ validate_antigen_registry(...)
 从 CSV、metadata、TASKS、proteinbase、ANDD、SAbDab 中建立抗原索引。
 ```
 
-### `homolog_search.py`
+### `msa/homolog_search.py`
 
 计划函数：
 
@@ -605,7 +605,7 @@ write_homolog_fasta(...)
 为 protein/glycoprotein/peptide 抗原搜索同源序列。
 ```
 
-### `msa_builder.py`
+### `msa/builder.py`
 
 计划函数：
 
@@ -621,7 +621,7 @@ sample_msa_depth(...)
 构建和质检 MSA cache。
 ```
 
-### `antigen_embeddings.py`
+### `embeddings/antigen.py`
 
 计划函数：
 
@@ -638,7 +638,7 @@ load_antigen_embedding_cache(...)
 生成并读取抗原相关 embedding。
 ```
 
-### `antigen_context_dataset.py`
+### `data/context.py`
 
 计划函数：
 
@@ -652,7 +652,7 @@ build_antigen_context_feature_matrix(...)
 把 antibody embedding 和 antigen context embedding 拼成 v3 模型输入。
 ```
 
-### `antigen_context_model.py`
+### `models/context.py`
 
 计划类：
 

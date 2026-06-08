@@ -1,5 +1,5 @@
 """
-homolog_search.py — v3 同源序列搜索辅助函数
+msa/homolog_search.py — 同源序列搜索辅助函数
 
 这个模块不假设训练时联网，也不在导入时运行 BLAST/MMseqs2。它只提供：
   - FASTA 读写；
@@ -17,7 +17,7 @@ import os
 import subprocess
 from typing import Iterable
 
-from .antigen_schema import clean_text, normalize_antigen_sequence
+from ..antigen_schema import clean_text, normalize_antigen_sequence
 
 
 @dataclass(frozen=True)
@@ -237,4 +237,3 @@ def run_search_command(
     if dry_run:
         return command
     return subprocess.run(command, check=check)
-

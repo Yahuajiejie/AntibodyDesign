@@ -1,5 +1,5 @@
 """
-msa_embeddings.py — v3 ESM-MSA-1b antigen embedding
+embeddings/msa.py — ESM-MSA-1b antigen embedding
 
 同源搜索和 MSA 构建是离线预处理；本模块只读取已有 A3M/FASTA-like MSA，
 调用 ESM-MSA-1b 生成 query antigen embedding，并写入 cache。
@@ -11,16 +11,16 @@ import os
 
 import numpy as np
 
-from .antigen_embeddings import (
+from .antigen import (
     MSA_ESM1B_DIM,
     AntigenEmbeddingManifest,
     has_cached_embedding,
     read_embedding_manifest,
     save_embedding_with_manifest,
 )
-from .antigen_schema import clean_text, normalize_antigen_sequence
-from .config import cfg
-from .msa_builder import read_a3m, sample_msa_depth, strip_a3m_insertions
+from ..antigen_schema import clean_text, normalize_antigen_sequence
+from ..config import cfg
+from ..msa.builder import read_a3m, sample_msa_depth, strip_a3m_insertions
 
 
 _msa_model = None

@@ -1,7 +1,7 @@
 """
-antigen_schema.py — v3 抗原上下文数据结构
+antigen_schema.py — 抗原上下文数据结构
 
-这个模块只定义 v3 需要的通用 schema 和小工具函数，不读取磁盘，也不依赖
+这个模块只定义 抗原编码器 需要的通用 schema 和小工具函数，不读取磁盘，也不依赖
 训练流程。设计目标是让 antigen_registry、embedding cache、v3 feature matrix
 使用同一套字段名和类型约定。
 """
@@ -64,7 +64,7 @@ SEQUENCE_SOURCES = {
     "tasks",
     "uniprot",
     "pdb",
-    "sabdab",
+    "sabdab", # SAbDab SAbDab: Structural Antibody Database，牛津 OPIG 做的结构抗体数据库。它专门整理 PDB 中所有可用的抗体结构，并统一注释。SAbDab 会标注抗体结构、重轻链配对、抗原信息、实验信息、基因信息，有些条目还包括 antibody-antigen binding affinity
     "andd",
     "proteinbase",
     "paper",
@@ -86,7 +86,7 @@ MISSING_TOKENS = {"", "nan", "none", "null", "na", "n/a", "unknown", "-"}
 @dataclass
 class AntigenRecord:
     """
-    一行 antigen_registry 的内存表示。
+    antigen_registry 表格 每一行数据的实例
 
     参数：
       antigen_id:            稳定 ID，用于 cache 文件名；不要用抗原名字直接做文件名
@@ -129,11 +129,16 @@ class AntigenRecord:
     def to_dict(self) -> dict[str, Any]:
         """返回可直接写入 pandas DataFrame 的 dict。"""
         return {field.name: getattr(self, field.name) for field in fields(self)}
+        # fields()返回的是变量名及其他基本信息（数据类型），getattr则是返回变量名存放的数据
 
     @classmethod
     def from_mapping(cls, row: dict[str, Any]) -> "AntigenRecord":
         """
         从 dict / pandas row 创建 AntigenRecord。
+
+        self 代表的是当前对象
+
+        cls 代表的则是抽象的类
 
         未提供的字段会使用 dataclass 默认值；bool 字段会做宽松转换。
         """
@@ -209,7 +214,7 @@ def stable_antigen_id(
     sequence_accession: str = "",
 ) -> str:
     """
-    生成稳定 antigen_id。
+    生成不易重复的 antigen_id。
 
     输入：
       compatible_group: 训练数据中的可比较组
@@ -263,7 +268,7 @@ def infer_antigen_type(
     if any(token in name for token in small_molecule_tokens):
         return "small_molecule"
 
-    carbohydrate_tokens = ["glycan", "carbohydrate", "polysaccharide", "sialyl"]
+    carbohydrate_tokens = ["glycan", "carbohydrate", "polysaccharide", "sialyl"] # sialyl 唾液酸
     if any(token in name for token in carbohydrate_tokens):
         return "carbohydrate"
 
@@ -317,7 +322,31 @@ def coerce_bool(value: Any) -> bool:
     if value is None:
         return False
     text = str(value).strip().lower()
-    return text in {"1", "true", "t", "yes", "y"}
+    return text in {"1", "true", "t", "T", "yes", "y"}
+
+
+def clean_registry_enum(value: Any, default: str) -> str:
+    """
+    标准化 registry 枚举字段，同时保留 unknown/none 这类合法枚举值。
+    枚举字段指的我们的代码开头注册的enum类型变量，处理枚举字段 最重要的就是清除不符合要求的字段
+
+    参数：
+      value:   原始枚举值。
+      default: 缺失时使用的默认值。
+
+    返回：
+      小写字符串。
+
+    注意事项：
+      之前定义的clean_text 会把 "unknown" 和 "none" 当作缺失值；但在 antigen_type 和
+      sequence_confidence 中，它们是合法枚举。registry 需要单独处理。
+    """
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"", "nan", "null", "na", "n/a", "-"}:
+        return default
+    return text
 
 
 def ordered_registry_dict(row: dict[str, Any]) -> dict[str, Any]:
@@ -327,10 +356,15 @@ def ordered_registry_dict(row: dict[str, Any]) -> dict[str, Any]:
     缺失字段补空字符串；布尔字段补 False。
     """
     ordered: dict[str, Any] = {}
-    for col in REGISTRY_COLUMNS:
+    for col in REGISTRY_COLUMNS: # 在现在的表格中依次找到标准表格对应的行，组装成最终表格
         if col in BOOL_COLUMNS:
             ordered[col] = coerce_bool(row.get(col, False))
+        elif col == "antigen_type":
+            ordered[col] = clean_registry_enum(row.get(col, "unknown"), "unknown")
+        elif col == "sequence_confidence":
+            ordered[col] = clean_registry_enum(row.get(col, "none"), "none")
+        elif col == "sequence_source":
+            ordered[col] = clean_text(row.get(col, "")) or "missing"
         else:
             ordered[col] = clean_text(row.get(col, ""))
     return ordered
-
