@@ -1,0 +1,23 @@
+# Baseline RankNet config (antibody-only, no cross-attention).
+#
+# Ablations / control experiments should be expressed as separate copies of
+# this file with the relevant fields changed -- affinity_transformer/config.py
+# does not apply any hidden defaults.
+
+data:
+  train_path: processed/binding/rosace2023automated/kd_adalimumab/records.parquet
+  valid_path: null
+  max_pairs_per_group: 50
+  seed: 0
+
+model:
+  antibody_encoder: esm2_t12_35M
+  antigen_encoder: null
+  d_model: 480
+  use_cross_attention: false
+
+train:
+  batch_size: 16
+  lr: 1.0e-4
+  epochs: 10
+  device: cpu

@@ -1,15 +1,8 @@
 # AffinityTransformer 编程规范
 
-版本：v0.3  
+版本：v0.2  
 依据：新版 `README.md`  
 角色设定：本文件按项目组长给开发组员发任务的方式编写。它不是论文说明，也不是泛泛的 Python 风格指南；它规定哪些代码该写、函数输入输出是什么、怎么验收、哪些行为禁止。
-
-v0.3 变更：在 §5.2 中新增 listwise 视图（`AffinityGroupExample` / `build_groups` /
-`ListwiseAffinityDataset`），与既有的 pairwise 视图（`build_pairs` /
-`PairwiseAffinityDataset`）并列，二者共享同一份 `AffinityRecordDataset` /
-`AffinityExample` 基座。目的是为后续"对照试验：哪种上游任务（pairwise /
-listwise / pointwise）效果最好"留出数据结构上的空间，本次改动不影响 §5.1
-和既有 pairwise 代码/测试。
 
 ## 0. 总体判断
 
@@ -109,7 +102,6 @@ AffinityTransformer/
           records.parquet
           qc_summary.csv
           dropped_records.csv
-       	...
     all_records.parquet
     total_records.csv
   configs/
@@ -337,7 +329,7 @@ def load_config(path: Path) -> Config:
 
 ### 5.2 `dataset.py`
 
-负责读取标准训练表、过滤可训练记录、并构造排序训练样本。
+负责读取标准训练表、过滤可训练记录、并构造pairwise ranking训练样本。
 
 本模块只处理已经通过 schema 校验的 processed table，不负责原始数据清洗、指标方向转换或 group_id 生成，具体流程如下：
 
@@ -346,20 +338,12 @@ processed table
 → schema validation
 → filter trainable records
 → build AffinityExample
-→ build pairs if task = pairwise ranking      → PairwiseDataset
-→ build groups if task = listwise ranking     → ListwiseDataset
+→ build pairs if task = pairwise ranking
+→ PairwiseDataset
 → collate_fn padding/mask
 → DataLoader
 → Trainer
 ```
-
-`AffinityRecordDataset` / `AffinityExample` 是所有上游任务共享的基座：
-
-1. **pointwise**：直接消费 `AffinityRecordDataset`，每条样本自带一个 `rank_label`，不需要额外的类。
-2. **pairwise**（当前 baseline，RankNet）：`build_pairs` + `PairwiseAffinityDataset` + `AffinityPairExample`。
-3. **listwise**（ListMLE / LambdaRank 式动态加权 / differentiable-Spearman 等后续上游任务）：`build_groups` + `ListwiseAffinityDataset` + `AffinityGroupExample`。
-
-三者都从同一份 `filter_trainable_records` 输出出发，互不依赖、互不修改；某次训练用哪个视图，是 `dataloader.py`/`trainer.py` 之后要加的 config 级开关（本规范暂不展开，§5.2 当前只交付数据结构本身）。
 
 现在可以先将这些功能放进一个文件，等到需要写的函数实在太多时，再把相关函数分配给不同文件放置，到时候可以这样组织文件
 
@@ -367,9 +351,8 @@ processed table
 schema.py   标准训练表字段、枚举、校验
 records.py  读取 processed table，过滤 keep_for_training
 pairs.py    build_pairs
-groups.py   build_groups
-dataset.py  AffinityDataset / PairwiseAffinityDataset / ListwiseAffinityDataset
-collate.py  RankBatch / PairBatch / GroupBatch / collate_fn
+dataset.py  AffinityDataset / PairwiseAffinityDataset
+collate.py  RankBatch / PairBatch / collate_fn
 ```
 
 核心类：
@@ -395,17 +378,6 @@ class PairwiseAffinityDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> AffinityPairExample:
         ...
-
-
-class ListwiseAffinityDataset(torch.utils.data.Dataset):
-    def __init__(self, records: pd.DataFrame, groups: pd.DataFrame) -> None:
-        ...
-
-    def __len__(self) -> int:
-        ...
-
-    def __getitem__(self, index: int) -> AffinityGroupExample:
-        ...
 ```
 
 核心函数：
@@ -420,13 +392,6 @@ def filter_trainable_records(records: pd.DataFrame) -> pd.DataFrame:
 def build_pairs(
     records: pd.DataFrame,
     max_pairs_per_group: int,
-    seed: int,
-) -> pd.DataFrame:
-    ...
-
-def build_groups(
-    records: pd.DataFrame,
-    max_group_size: int | None,
     seed: int,
 ) -> pd.DataFrame:
     ...
@@ -461,14 +426,6 @@ right: AffinityExample
 y_ij: float
 ```
 
-`ListwiseAffinityDataset` 的一个样本 `AffinityGroupExample` 至少包含如下信息：
-
-```text
-group_id: str
-label_kind: str
-examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，按 record_id 排序
-```
-
 **Pair 构造规则**
 
 1. 只使用 `keep_for_training = True` 的记录。
@@ -485,22 +442,6 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
 1. 固定 seed 时 pair 结果可复现。
 2. 输出 pair 不跨 group。
 3. 空 group 或单一标签 group 不报错，但不产生 pair。
-
-**Group 构造规则**（`build_groups`，listwise 视图，与上面 Pair 构造规则共用第 1/3 条）
-
-1. 只使用 `keep_for_training = True` 的记录（同 Pair 规则 1）。
-2. 只在同一 `group_id` 内构成 group，输出按 `(group_id, record_id)` 排序。
-3. `rank_label` 为 `None`、`NaN`、`inf` 或 `-inf` 的记录不得进入 group（同 Pair 规则 3）。
-4. 一个 group 内 `rank_label` 唯一值少于 2 个时，整个 group 不产生输出（无序可学，呼应 §5.6 的 `n_unique_labels < 2` 跳过规则）。
-5. 每个 group 的成员数不得超过 `max_group_size`（`None` 表示不裁剪）；裁剪时按 `f"{seed}:{group_id}"` 派生的随机数确定性采样。
-6. `max_group_size` 非 `None` 时必须 `>= 2`，否则抛出 `ValueError`。
-7. `label_kind = "binary"` 的 group 不做特殊处理：只要正负两类都存在（`n_unique_labels == 2`），整个 group（含同类内的多条记录）原样保留——listwise loss 下"全部正例排在全部负例之前"本身就是合法的目标排列。
-
-验收：
-
-1. 固定 seed 时 group 结果可复现。
-2. 输出 group 不跨 `group_id`。
-3. 空 group 或单一标签 group 不报错，但不产生输出。
 
 ### 5.3 `dataloader.py`
 
@@ -825,9 +766,6 @@ load_records rejects missing required columns
 build_pairs never crosses group_id
 build_pairs skips equal labels
 build_pairs is reproducible with fixed seed
-build_groups never crosses group_id
-build_groups skips single-label groups
-build_groups is reproducible with fixed seed
 collate_rank_batch produces valid masks
 ranknet_loss rewards correct ordering
 compute_group_spearman skips one-label groups
