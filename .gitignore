@@ -19,3 +19,12 @@
 
 # 不要大数据集
 第四届*
+
+# Generated / processed data
+AffinityTransformer/processed/
+*.parquet
+*.pkl
+*.pt
+*.ckpt
+*.npy
+*.npz
