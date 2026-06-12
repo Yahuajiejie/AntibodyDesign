@@ -1,15 +1,8 @@
 # AffinityTransformer 编程规范
 
-版本：v0.3  
+版本：v0.2  
 依据：新版 `README.md`  
 角色设定：本文件按项目组长给开发组员发任务的方式编写。它不是论文说明，也不是泛泛的 Python 风格指南；它规定哪些代码该写、函数输入输出是什么、怎么验收、哪些行为禁止。
-
-v0.3 变更：在 §5.2 中新增 listwise 视图（`AffinityGroupExample` / `build_groups` /
-`ListwiseAffinityDataset`），与既有的 pairwise 视图（`build_pairs` /
-`PairwiseAffinityDataset`）并列，二者共享同一份 `AffinityRecordDataset` /
-`AffinityExample` 基座。目的是为后续"对照试验：哪种上游任务（pairwise /
-listwise / pointwise）效果最好"留出数据结构上的空间，本次改动不影响 §5.1
-和既有 pairwise 代码/测试。
 
 ## 0. 总体判断
 
@@ -19,7 +12,7 @@ listwise / pointwise）效果最好"留出数据结构上的空间，本次改�
 
 1. 模型输出的 `score` 只在同一 `group_id` 内比较，不解释为跨数据集的绝对亲和力。
 2. `Kd`、`IC50`、`EC50`、`fitness`、`Pred_affinity`、`bind/no bind` 必须先明确方向和标签质量，再进入训练。
-3. 缺失抗原信息可以标记，不能伪造成真实特征；缺失抗原对应的位置属于无效 token，必须被 mask 掉，不得当作 valid token 送入 attention。
+3. 缺失抗原信息可以标记，不能伪造成真实特征；attention 中的无效 token 必须被 mask 掉。
 4. Cross-Attention 是特征交互模块，不是三维结构模拟；任何汇报和注释都不要过度宣称生物物理含义。
 
 ## 1. 项目代码边界
@@ -75,43 +68,22 @@ AffinityTransformer/
   scripts/
     prepare/
       binding/
-        prepare_all.sh
-        manifest.csv
         AbRank/
-          dataset/
-            prepare.sh
-            convert.py
+          prepare.sh
+          convert.py
         li2023machine/
-          affinity1/
-            prepare.sh
-            convert.py
-          affinity2/
-            prepare.sh
-            convert.py
-        kothiwal2025htp/
-          DCC_ec50/
-            prepare.sh
-            convert.py
-          DCC_spr/
-            prepare.sh
-            convert.py
-          ...
+          prepare.sh
+          convert.py
+        tsuruta2024avida_hIL6/
+          prepare.sh
+          convert.py
       validate_processed_table.py
   processed/
     binding/
       AbRank/
-        dataset/
-          records.parquet
-          qc_summary.csv
-          dropped_records.csv
-      kothiwal2025htp/
-        DCC_ec50/
-          records.parquet
-          qc_summary.csv
-          dropped_records.csv
-       	...
-    all_records.parquet
-    total_records.csv
+        records.parquet
+        qc_summary.csv
+        dropped_records.csv
   configs/
     baseline_ranknet.yaml
   affinity_transformer/
@@ -140,8 +112,6 @@ AffinityTransformer/
 3. `affinity_transformer/` 是通用模型代码，不能依赖某个原始数据集的特殊列。
 4. `__init__.py` 可以写的很简单，甚至可以只声明版本号；不要在 import 时加载模型或读大文件。
 5. 无论早期代码量有多大，`losses.py`、`metrics.py` 都不要合并在 `trainer.py`，只要函数超过两个就拆出来。
-6. 上面的 `AbRank`、`li2023machine`、`kothiwal2025htp` 只是目录形态示例，不代表只处理这些 binding 数据集。
-7. 当前 `data/flab_metadata.csv` 中 `category = "binding"` 的源文件数为 86；`scripts/prepare/binding/manifest.csv` 必须覆盖所有计划纳入训练或明确暂不纳入的 binding 源文件。
 
 ## 3. 标准训练表 schema
 
@@ -152,8 +122,6 @@ AffinityTransformer/
 ```text
 record_id: str
 dataset_id: str
-study_id: str
-table_id: str
 source_file: str
 source_row: int
 
@@ -182,7 +150,7 @@ transform_rule: str | None
 rank_label: float | None
 label_kind: "experimental" | "predicted" | "binary" | "unknown"
 
-group_id: str
+group_id: str | None
 keep_for_training: bool
 drop_reason: str | None
 ```
@@ -190,63 +158,31 @@ drop_reason: str | None
 字段规则：
 
 1. `rank_label` 必须是越大越好。
-2. binding 数据的 `dataset_id` 建议固定为 `{study_id}/{table_id}`，用于汇总后保留源表层级。
-3. `group_id` 至少由 `dataset_id`、`antigen_key`、`assay_name`、`metric_name`、`label_kind` 生成。
-4. `label_kind = "binary"` 的记录只能产生正负 pair，同标签之间不能产生 pair。
-5. `antigen_sequence = None` 时，`antigen_source` 必须是 `"missing"`。
-6. `keep_for_training = False` 的记录可以留在表里，但 dataset 必须过滤掉它。
+2. `group_id` 至少由 `dataset_id`、`antigen_key`、`assay_name`、`metric_name`、`label_kind` 生成。
+3. `label_kind = "binary"` 的记录只能产生正负 pair，同标签之间不能产生 pair。
+4. `antigen_sequence = None` 时，`antigen_source` 必须是 `"missing"`。
+5. `keep_for_training = False` 的记录可以留在表里，但 dataset 必须过滤掉它。
 
+建议字段：
 
+```text
+metric_unit: str | None
+transform_rule: str
+sequence_hash: str
+notes: str | None
+```
 
 ## 4. 数据处理脚本规范
 
-每个 binding 源表必须对应一个明确的处理单元。处理单元可以按 `study_id/table_id/` 两层目录组织，每个处理单元必须包含一个 `prepare.sh`，作为该源表的唯一入口。
+每个数据集脚本必须包含一个 `prepare.sh`，作为该数据集的唯一入口。
 
 示例结构：
 
 ```text
-scripts/prepare/binding/AbRank/dataset/
-  prepare.sh
-  convert.py
-
-scripts/prepare/binding/kothiwal2025htp/DCC_ec50/
+scripts/prepare/binding/AbRank/
   prepare.sh
   convert.py
 ```
-
-命名规则：
-
-1. `study_id` 来自源文件名前缀或论文/数据集简称，例如 `li2023machine`、`kothiwal2025htp`、`phillips2021binding`。
-2. `table_id` 表示该 study 下的具体表，例如 `affinity1`、`DCC_ec50`、`cr6261_h1_kd`。
-3. 如果一个 study 只有一个表，也仍然保留 `table_id`，可以使用 `dataset`、`default` 或更具体的表名。
-4. `processed/binding/{study_id}/{table_id}/` 必须和 `scripts/prepare/binding/{study_id}/{table_id}/` 一一对应。
-
-`scripts/prepare/binding/manifest.csv` 必须记录所有 binding 源表：
-
-```text
-source_file
-study_id
-table_id
-prepare_dir
-processed_dir
-status
-reason
-```
-
-`status` 只允许：
-
-```text
-planned
-ready
-excluded
-blocked
-```
-
-规则：
-
-1. 当前 metadata 中的 86 个 binding 源文件都必须在 manifest 中出现。
-2. 暂不处理的源文件也必须写入 manifest，并给出 `excluded` 或 `blocked` 的原因。
-3. `prepare_all.sh` 只读取 manifest 中 `status = "ready"` 的行并逐个运行对应 `prepare.sh`。
 
 `prepare.sh` 规范：
 
@@ -263,12 +199,12 @@ set -euo pipefail
 要求：
 
 1. `prepare.sh` 从仓库根目录运行时必须成功。
-2. binding 输出固定写入 `processed/binding/{study_id}/{table_id}/`。
+2. 输出固定写入 `processed/{category}/{dataset_id}/`。
 3. 转换脚本必须生成 `records.parquet` 或 `records.csv`。
 4. 同时生成 `qc_summary.csv` 和 `dropped_records.csv`。
 5. 每次运行覆盖自己的输出目录可以接受，但不得删除其他数据集输出。
 6. 如果脚本需要外部下载抗原序列，必须写入 `antigen_source` 和来源说明；早期 MVP 可以直接标记 missing。
-7. `prepare_all.sh` 可以把所有 `ready` 处理单元的 `records.parquet` 汇总为 `processed/binding/all_records.parquet`，但汇总表必须保留 `study_id`、`table_id`、`dataset_id` 和 `source_file`。
+7. 最后可以根据每个数据集、数据集的每个子目录的分表格，合成一个总表格
 
 共享验证脚本 `scripts/prepare/validate_processed_table.py` 是允许存在的，因为它不是通用 raw parser，只检查最终表是否符合 schema。
 
@@ -337,7 +273,7 @@ def load_config(path: Path) -> Config:
 
 ### 5.2 `dataset.py`
 
-负责读取标准训练表、过滤可训练记录、并构造排序训练样本。
+负责读取标准训练表、过滤可训练记录、并构造pairwise ranking训练样本。
 
 本模块只处理已经通过 schema 校验的 processed table，不负责原始数据清洗、指标方向转换或 group_id 生成，具体流程如下：
 
@@ -346,20 +282,12 @@ processed table
 → schema validation
 → filter trainable records
 → build AffinityExample
-→ build pairs if task = pairwise ranking      → PairwiseDataset
-→ build groups if task = listwise ranking     → ListwiseDataset
+→ build pairs if task = pairwise ranking
+→ PairwiseDataset
 → collate_fn padding/mask
 → DataLoader
 → Trainer
 ```
-
-`AffinityRecordDataset` / `AffinityExample` 是所有上游任务共享的基座：
-
-1. **pointwise**：直接消费 `AffinityRecordDataset`，每条样本自带一个 `rank_label`，不需要额外的类。
-2. **pairwise**（当前 baseline，RankNet）：`build_pairs` + `PairwiseAffinityDataset` + `AffinityPairExample`。
-3. **listwise**（ListMLE / LambdaRank 式动态加权 / differentiable-Spearman 等后续上游任务）：`build_groups` + `ListwiseAffinityDataset` + `AffinityGroupExample`。
-
-三者都从同一份 `filter_trainable_records` 输出出发，互不依赖、互不修改；某次训练用哪个视图，是 `dataloader.py`/`trainer.py` 之后要加的 config 级开关（本规范暂不展开，§5.2 当前只交付数据结构本身）。
 
 现在可以先将这些功能放进一个文件，等到需要写的函数实在太多时，再把相关函数分配给不同文件放置，到时候可以这样组织文件
 
@@ -367,9 +295,8 @@ processed table
 schema.py   标准训练表字段、枚举、校验
 records.py  读取 processed table，过滤 keep_for_training
 pairs.py    build_pairs
-groups.py   build_groups
-dataset.py  AffinityDataset / PairwiseAffinityDataset / ListwiseAffinityDataset
-collate.py  RankBatch / PairBatch / GroupBatch / collate_fn
+dataset.py  AffinityDataset / PairwiseAffinityDataset
+collate.py  RankBatch / PairBatch / collate_fn
 ```
 
 核心类：
@@ -395,17 +322,6 @@ class PairwiseAffinityDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> AffinityPairExample:
         ...
-
-
-class ListwiseAffinityDataset(torch.utils.data.Dataset):
-    def __init__(self, records: pd.DataFrame, groups: pd.DataFrame) -> None:
-        ...
-
-    def __len__(self) -> int:
-        ...
-
-    def __getitem__(self, index: int) -> AffinityGroupExample:
-        ...
 ```
 
 核心函数：
@@ -420,13 +336,6 @@ def filter_trainable_records(records: pd.DataFrame) -> pd.DataFrame:
 def build_pairs(
     records: pd.DataFrame,
     max_pairs_per_group: int,
-    seed: int,
-) -> pd.DataFrame:
-    ...
-
-def build_groups(
-    records: pd.DataFrame,
-    max_group_size: int | None,
     seed: int,
 ) -> pd.DataFrame:
     ...
@@ -461,14 +370,6 @@ right: AffinityExample
 y_ij: float
 ```
 
-`ListwiseAffinityDataset` 的一个样本 `AffinityGroupExample` 至少包含如下信息：
-
-```text
-group_id: str
-label_kind: str
-examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，按 record_id 排序
-```
-
 **Pair 构造规则**
 
 1. 只使用 `keep_for_training = True` 的记录。
@@ -485,22 +386,6 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
 1. 固定 seed 时 pair 结果可复现。
 2. 输出 pair 不跨 group。
 3. 空 group 或单一标签 group 不报错，但不产生 pair。
-
-**Group 构造规则**（`build_groups`，listwise 视图，与上面 Pair 构造规则共用第 1/3 条）
-
-1. 只使用 `keep_for_training = True` 的记录（同 Pair 规则 1）。
-2. 只在同一 `group_id` 内构成 group，输出按 `(group_id, record_id)` 排序。
-3. `rank_label` 为 `None`、`NaN`、`inf` 或 `-inf` 的记录不得进入 group（同 Pair 规则 3）。
-4. 一个 group 内 `rank_label` 唯一值少于 2 个时，整个 group 不产生输出（无序可学，呼应 §5.6 的 `n_unique_labels < 2` 跳过规则）。
-5. 每个 group 的成员数不得超过 `max_group_size`（`None` 表示不裁剪）；裁剪时按 `f"{seed}:{group_id}"` 派生的随机数确定性采样。
-6. `max_group_size` 非 `None` 时必须 `>= 2`，否则抛出 `ValueError`。
-7. `label_kind = "binary"` 的 group 不做特殊处理：只要正负两类都存在（`n_unique_labels == 2`），整个 group（含同类内的多条记录）原样保留——listwise loss 下"全部正例排在全部负例之前"本身就是合法的目标排列。
-
-验收：
-
-1. 固定 seed 时 group 结果可复现。
-2. 输出 group 不跨 `group_id`。
-3. 空 group 或单一标签 group 不报错，但不产生输出。
 
 ### 5.3 `dataloader.py`
 
@@ -575,9 +460,16 @@ score: FloatTensor[B]
 
 2. 当 antigen_tokens is None 或 antigen_mask 全 False 时，模型不得执行普通 antigen attention。
 
-   采用 antibody-only baseline：缺失抗原时，跳过 cross-attention，只使用 antibody representation 打分。
+   可以采用如下两种代替方案：
 
-   > 注：learned missing-antigen token（可学习占位符）作为后续消融实验候选，不纳入当前 baseline。
+   ```
+   方案 A：antibody-only baseline
+   - 缺失抗原时，只使用 antibody representation 打分。
+   
+   方案 B：learned missing-antigen embedding
+   - 使用一个可学习的 missing antigen token 作为抗原占位。
+   - 该 token 必须被视为 valid token，而不是 padding。
+   ```
 
 3. attention 中的 invalid token 必须通过 additive mask 屏蔽。
 
@@ -721,11 +613,8 @@ def rank_antibodies(
 antibody_id: str
 heavy_chain: str
 light_chain: str | None
-single_chain_sequence: str | None
-antibody_type: "Fv" | "scFv" | "VHH" 
+antibody_type: "Fv" | "scFv" | "VHH"
 ```
-
-当前还没有支持"Fab" | "IgG" | "unknown"，后续可以补充
 
 输出：
 
@@ -825,9 +714,6 @@ load_records rejects missing required columns
 build_pairs never crosses group_id
 build_pairs skips equal labels
 build_pairs is reproducible with fixed seed
-build_groups never crosses group_id
-build_groups skips single-label groups
-build_groups is reproducible with fixed seed
 collate_rank_batch produces valid masks
 ranknet_loss rewards correct ordering
 compute_group_spearman skips one-label groups
