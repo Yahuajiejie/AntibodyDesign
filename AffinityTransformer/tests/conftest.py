@@ -6,6 +6,8 @@ import math
 
 import pandas as pd
 import pytest
+import torch
+import torch.nn as nn
 
 
 def _row(**overrides: object) -> dict[str, object]:
@@ -142,6 +144,80 @@ def toy_records() -> pd.DataFrame:
     ))
 
     return pd.DataFrame(rows)
+
+
+# ── test-only tokenizer / encoder stubs (NOT part of docs/programming_spec.md) ──
+#
+# §5.3/§5.4 are written against a `Tokenizer` protocol and an `nn.Module`
+# encoder interface, both supplied by the caller. These stubs are minimal
+# objects satisfying those interfaces, used only to exercise
+# dataloader.py/model.py without any real pretrained tokenizer/model (which
+# this sandbox cannot download). They intentionally have no vocabulary or
+# architecture significance and must not be treated as part of the spec.
+
+_AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
+_AA_TO_ID = {aa: i + 1 for i, aa in enumerate(_AMINO_ACIDS)}  # 1..20
+_PAD_ID = 0
+_SEP_ID = len(_AMINO_ACIDS) + 1  # "|" (paired-chain separator)
+_BOS_ID = len(_AMINO_ACIDS) + 2  # used for the empty-string placeholder
+FAKE_VOCAB_SIZE = len(_AMINO_ACIDS) + 3
+
+
+class FakeTokenizer:
+    """Minimal stub satisfying `dataloader.Tokenizer` (test-only)."""
+
+    def __call__(
+        self, sequences: list[str], padding: bool = True, return_tensors: str = "pt"
+    ) -> dict[str, torch.Tensor]:
+        ids_list = [self._encode(seq) for seq in sequences]
+        max_len = max(len(ids) for ids in ids_list)
+        input_ids = torch.full((len(ids_list), max_len), _PAD_ID, dtype=torch.long)
+        attention_mask = torch.zeros((len(ids_list), max_len), dtype=torch.long)
+        for i, ids in enumerate(ids_list):
+            input_ids[i, : len(ids)] = torch.tensor(ids, dtype=torch.long)
+            attention_mask[i, : len(ids)] = 1
+        return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    @staticmethod
+    def _encode(seq: str) -> list[int]:
+        if seq == "":
+            return [_BOS_ID]
+        return [_SEP_ID if ch == "|" else _AA_TO_ID.get(ch, _BOS_ID) for ch in seq]
+
+
+class FakeEncoder(nn.Module):
+    """Minimal `nn.Module` satisfying the §5.4 encoder interface (test-only).
+
+    Embedding + linear layer: deterministic shapes, never produces NaN for
+    any `input_ids`/`attention_mask`, no pretrained weights required.
+    """
+
+    def __init__(self, d_model: int, vocab_size: int = FAKE_VOCAB_SIZE) -> None:
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        self.linear = nn.Linear(d_model, d_model)
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        del attention_mask  # unused: embedding+linear cannot produce NaN regardless
+        return self.linear(self.embedding(input_ids))
+
+
+@pytest.fixture()
+def antibody_tokenizer() -> FakeTokenizer:
+    return FakeTokenizer()
+
+
+@pytest.fixture()
+def antigen_tokenizer() -> FakeTokenizer:
+    return FakeTokenizer()
+
+
+@pytest.fixture()
+def make_fake_encoder():
+    def _make(d_model: int) -> FakeEncoder:
+        return FakeEncoder(d_model)
+
+    return _make
 
 
 """
