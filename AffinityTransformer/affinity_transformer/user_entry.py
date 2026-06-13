@@ -1,27 +1,9 @@
-"""External user-facing entry points (spec docs/programming_spec.md §5.8).
+"""External user-facing prediction entry points.
 
-This is the only module external users are expected to call directly. It
-hides `RankBatch`/`PairBatch`/`AffinityExample`, `group_id`/`pair_id`, and
-`ranknet_loss` entirely (spec §5.8 rule 1): the public surface is
-`AntibodyInput`, `load_model`, `score_antibodies`, and `rank_antibodies`.
-
-Model + tokenizer bundling
----------------------------
-`score_antibodies`/`rank_antibodies` need tokenizers to build a `RankBatch`
-(spec §5.3), but their spec signature takes only `model: AffinityRanker`.
-This module resolves that by attaching the tokenizers `build_model_and_tokenizers`
-(spec §5.7) returns as plain (non-`nn.Module`) attributes on the returned
-`AffinityRanker` instance:
-
-    model.antibody_tokenizer: Tokenizer
-    model.antigen_tokenizer: Tokenizer | None
-
-`load_model` sets these attributes. `score_antibodies`/`rank_antibodies` read
-them via `getattr` and raise `ValueError` if `antibody_tokenizer` is missing
--- e.g. for an `AffinityRanker` that was constructed directly rather than via
-`load_model` (tests attach `FakeTokenizer` the same way). This keeps
-`AffinityRanker` itself (`model.py`, spec §5.4) free of any tokenizer
-dependency.
+The public API is built around competition-style inputs: users provide an
+antigen sequence, candidate antibody sequences, and an optional `model_name`.
+They do not pass `AffinityRanker`, tokenizers, checkpoints, or configs
+directly. Those objects are bundled inside `AffinityPredictor`.
 """
 
 from __future__ import annotations
@@ -32,202 +14,292 @@ from typing import Literal, Sequence
 
 import pandas as pd
 import torch
+import yaml
 
-from .config import load_config
+from .config import Config, load_config
 from .dataloader import RankBatch, Tokenizer, collate_rank_batch
 from .dataset import AffinityExample
 from .model import AffinityRanker
 from .trainer import build_model_and_tokenizers
-from .utils import get_logger, validate_amino_acid_sequence
+from .utils import validate_amino_acid_sequence
 
-_logger = get_logger(__name__)
-
-#: Columns of the `pd.DataFrame` returned by `score_antibodies`/`rank_antibodies`
-#: (spec §5.8 "输出").
-OUTPUT_COLUMNS = ("antibody_id", "score", "rank")
-
-#: `AntibodyInput.antibody_type` values supported by `score_antibodies` (spec
-#: §5.8: "Fab" | "IgG" | "unknown" are not yet supported).
-SUPPORTED_ANTIBODY_TYPES = frozenset({"Fv", "scFv", "VHH"})
+OUTPUT_COLUMNS = ("query_id", "antibody_id", "score", "rank", "model_name")
+INPUT_COLUMNS = (
+    "query_id",
+    "antibody_id",
+    "antigen_sequence",
+    "heavy_chain",
+    "light_chain",
+    "single_chain_sequence",
+    "antibody_type",
+)
+SUPPORTED_ANTIBODY_TYPES = frozenset({"Fv", "scFv", "VHH", "Fab", "IgG", "unknown"})
 
 
 @dataclass
 class AntibodyInput:
-    """One antibody supplied by an external user (spec §5.8).
-
-    Attributes:
-        antibody_id: User-chosen identifier, returned verbatim in the output.
-        heavy_chain: Heavy-chain (or VHH) sequence, or `None`.
-        light_chain: Light-chain sequence, or `None`.
-        single_chain_sequence: Single-chain sequence (e.g. scFv), or `None`.
-        antibody_type: One of `SUPPORTED_ANTIBODY_TYPES` (`"Fv"`, `"scFv"`,
-            `"VHH"`). `"Fab"`, `"IgG"`, `"unknown"` are not yet supported
-            (spec §5.8).
-    """
+    """One antibody supplied by an external user."""
 
     antibody_id: str
     heavy_chain: str | None
     light_chain: str | None
     single_chain_sequence: str | None
-    antibody_type: Literal["Fv", "scFv", "VHH"]
+    antibody_type: Literal["Fv", "scFv", "VHH", "Fab", "IgG", "unknown"]
+
+
+@dataclass
+class AffinityPredictor:
+    """Inference bundle: model + tokenizers + config."""
+
+    model_name: str
+    model: AffinityRanker
+    config: Config
+    antibody_tokenizer: Tokenizer
+    antigen_tokenizer: Tokenizer | None
+    checkpoint_path: Path
+
+
+def load_predictor(
+    model_name: str = "best",
+    registry_path: Path | None = None,
+) -> AffinityPredictor:
+    """Load a named predictor from `configs/model_registry.yaml`.
+
+    Args:
+        model_name: Name under `models` in the registry. The literal
+            `"default"` resolves to the registry's `default` entry.
+        registry_path: Optional path to a model registry YAML.
+
+    Returns:
+        An `AffinityPredictor` ready for inference.
+
+    Raises:
+        FileNotFoundError: If the registry, config, or checkpoint is missing.
+        ValueError: If `model_name` is unknown or the registry is malformed.
+    """
+    registry_path = Path("configs/model_registry.yaml") if registry_path is None else Path(registry_path)
+    registry = _load_registry(registry_path)
+    if model_name == "default":
+        model_name = str(registry.get("default", "best"))
+
+    models = registry.get("models")
+    if not isinstance(models, dict):
+        raise ValueError(f"Model registry {registry_path} must contain a 'models' mapping")
+    if model_name not in models:
+        raise ValueError(
+            f"Unknown model_name {model_name!r}. Available models: {sorted(models)}"
+        )
+
+    entry = models[model_name]
+    if not isinstance(entry, dict):
+        raise ValueError(f"Registry entry for model {model_name!r} must be a mapping")
+    checkpoint_path = _registry_path(registry_path, entry.get("checkpoint_path"), "checkpoint_path")
+    config_path = _registry_path(registry_path, entry.get("config_path"), "config_path")
+
+    config = load_config(config_path)
+    model, antibody_tokenizer, antigen_tokenizer = build_model_and_tokenizers(config.model)
+    checkpoint = _torch_load_checkpoint(checkpoint_path, map_location="cpu")
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(torch.device(config.train.device))
+    model.eval()
+
+    return AffinityPredictor(
+        model_name=model_name,
+        model=model,
+        config=config,
+        antibody_tokenizer=antibody_tokenizer,
+        antigen_tokenizer=antigen_tokenizer,
+        checkpoint_path=checkpoint_path,
+    )
 
 
 def load_model(checkpoint_path: Path, config_path: Path | None = None) -> AffinityRanker:
-    """Load a trained model from a checkpoint (spec §5.8).
+    """Load a bare `AffinityRanker` for internal/developer use.
 
-    Args:
-        checkpoint_path: Path to a checkpoint written by
-            `Trainer.save_checkpoint` (spec §5.7 rule 4), containing at least
-            `"model_state_dict"` and `"config"`.
-        config_path: If given, the model architecture is built from
-            `load_config(config_path).model` instead of
-            `checkpoint["config"].model`. Use this to load a checkpoint whose
-            embedded config is unavailable or out of date; the checkpoint's
-            `model_state_dict` must still be compatible with the resulting
-            architecture.
-
-    Returns:
-        An `AffinityRanker` (spec §5.4) in eval mode, with its trained
-        weights loaded, plus two extra attributes used by
-        `score_antibodies`/`rank_antibodies` (see module docstring):
-            - `antibody_tokenizer`: `Tokenizer` for the antibody encoder.
-            - `antigen_tokenizer`: `Tokenizer | None` for the antigen encoder.
-
-    Raises:
-        FileNotFoundError: If `checkpoint_path` (or `config_path`) does not
-            exist.
-        ValueError: Propagated from `build_model_and_tokenizers` (spec §5.7)
-            if the resolved `ModelConfig` uses an unsupported encoder.
-        RuntimeError: Propagated from `load_state_dict` if `model_state_dict`
-            does not match the architecture built from the resolved config.
+    This function intentionally returns only the tensor model. It does not
+    attach tokenizers and is not the competition-facing entry point.
     """
-    checkpoint = torch.load(Path(checkpoint_path), map_location="cpu")
+    checkpoint_path = Path(checkpoint_path)
+    checkpoint = _torch_load_checkpoint(checkpoint_path, map_location="cpu")
+    config = load_config(Path(config_path)) if config_path is not None else checkpoint["config"]
 
-    if config_path is not None:
-        config = load_config(Path(config_path))
-    else:
-        config = checkpoint["config"]
-
-    model, antibody_tokenizer, antigen_tokenizer = build_model_and_tokenizers(config.model)
+    model, _, _ = build_model_and_tokenizers(config.model)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
-
-    model.antibody_tokenizer = antibody_tokenizer  # type: ignore[attr-defined]
-    model.antigen_tokenizer = antigen_tokenizer  # type: ignore[attr-defined]
     return model
 
 
 def score_antibodies(
     antigen_sequence: str | None,
     antibodies: Sequence[AntibodyInput],
-    model: AffinityRanker,
+    model_name: str = "best",
 ) -> pd.DataFrame:
-    """Score each antibody against one antigen (spec §5.8).
-
-    Args:
-        antigen_sequence: Antigen amino-acid sequence, or `None` if unknown
-            (spec §5.8 rule 4: the model's missing-antigen branch is used --
-            `collate_rank_batch`/`AffinityRanker.forward` already handle
-            `antigen_sequence is None`, including the case where `model` has
-            no antigen encoder at all).
-        antibodies: Antibodies to score. Must be non-empty.
-        model: A model returned by `load_model` (or any `AffinityRanker`
-            with `antibody_tokenizer`/`antigen_tokenizer` attributes attached
-            the same way, e.g. in tests).
-
-    Returns:
-        `pd.DataFrame` with columns `antibody_id, score, rank` (`OUTPUT_COLUMNS`),
-        one row per element of `antibodies`, in the same order as `antibodies`.
-        `rank` is `1` for the highest `score` (ties share the same rank, spec
-        §5.8 rule 2 -- see `rank_antibodies` for a result sorted by `score`).
-
-    Raises:
-        ValueError: If `antibodies` is empty; if `antigen_sequence` is not
-            `None` and fails `validate_amino_acid_sequence` (spec §5.8 rule
-            3); if any `AntibodyInput.antibody_type` is not in
-            `SUPPORTED_ANTIBODY_TYPES`; if any `AntibodyInput` has no usable
-            antibody sequence, or a provided chain fails
-            `validate_amino_acid_sequence` (spec §5.8 rule 3); or if `model`
-            has no `antibody_tokenizer` attribute attached.
-    """
-    if not antibodies:
-        raise ValueError("antibodies must be non-empty")
-
-    if antigen_sequence is not None and not validate_amino_acid_sequence(antigen_sequence):
-        raise ValueError(f"antigen_sequence is not a valid amino-acid sequence: {antigen_sequence!r}")
-
-    antibody_tokenizer = getattr(model, "antibody_tokenizer", None)
-    if antibody_tokenizer is None:
-        raise ValueError(
-            "model has no 'antibody_tokenizer' attribute attached. Build it with "
-            "load_model(), or attach one manually (model.antibody_tokenizer = ...; "
-            "see user_entry module docstring)."
-        )
-    antigen_tokenizer: Tokenizer | None = getattr(model, "antigen_tokenizer", None)
-
-    examples = [_to_affinity_example(antibody, antigen_sequence) for antibody in antibodies]
-    batch = collate_rank_batch(examples, antibody_tokenizer, antigen_tokenizer)
-
-    device = next(model.parameters()).device
-    batch = _move_rank_batch(batch, device)
-
-    model.eval()
-    with torch.no_grad():
-        scores = model(batch)
-
-    result = pd.DataFrame({
-        "antibody_id": [antibody.antibody_id for antibody in antibodies],
-        "score": scores.detach().cpu().tolist(),
-    })
-    result["rank"] = result["score"].rank(method="min", ascending=False).astype(int)
-    return result[list(OUTPUT_COLUMNS)]
+    """Score antibodies against one antigen using a named model."""
+    predictor = load_predictor(model_name)
+    return score_antibodies_with_predictor(antigen_sequence, antibodies, predictor)
 
 
 def rank_antibodies(
     antigen_sequence: str | None,
     antibodies: Sequence[AntibodyInput],
-    model: AffinityRanker,
+    model_name: str = "best",
 ) -> pd.DataFrame:
-    """Rank antibodies against one antigen by descending score (spec §5.8).
-
-    Args:
-        antigen_sequence: See `score_antibodies`.
-        antibodies: See `score_antibodies`.
-        model: See `score_antibodies`.
-
-    Returns:
-        The `score_antibodies` result (columns `antibody_id, score, rank`),
-        sorted by `score` descending (spec §5.8 rule 2), with the index
-        reset. Ties keep their relative input order (stable sort).
-
-    Raises:
-        ValueError: Same as `score_antibodies`.
-    """
-    result = score_antibodies(antigen_sequence, antibodies, model)
-    return result.sort_values("score", ascending=False, kind="stable").reset_index(drop=True)
+    """Rank antibodies against one antigen using a named model."""
+    predictor = load_predictor(model_name)
+    return rank_antibodies_with_predictor(antigen_sequence, antibodies, predictor)
 
 
-def _to_affinity_example(antibody: AntibodyInput, antigen_sequence: str | None) -> AffinityExample:
-    """Build the `AffinityExample` for one `AntibodyInput` (spec §5.8 -> §5.2).
+def rank_antibody_table(
+    input_table: pd.DataFrame,
+    model_name: str = "best",
+) -> pd.DataFrame:
+    """Rank a batch table, loading the named predictor once."""
+    predictor = load_predictor(model_name)
+    return rank_antibody_table_with_predictor(input_table, predictor)
 
-    Args:
-        antibody: One user-supplied antibody.
-        antigen_sequence: Shared antigen sequence for this scoring call, or
-            `None`.
 
-    Returns:
-        An `AffinityExample` with placeholder `rank_label=0.0`,
-        `label_kind="unknown"`, `dataset_id`/`group_id="user_query"` (not
-        used by `collate_rank_batch`/`AffinityRanker.forward`, but required
-        fields of `AffinityExample`).
+def score_antibodies_with_predictor(
+    antigen_sequence: str | None,
+    antibodies: Sequence[AntibodyInput],
+    predictor: AffinityPredictor,
+    query_id: str = "query_0",
+) -> pd.DataFrame:
+    """Score antibodies against one antigen using an already loaded predictor."""
+    if not antibodies:
+        raise ValueError("antibodies must be non-empty")
+    _validate_optional_sequence(antigen_sequence, "antigen_sequence")
 
-    Raises:
-        ValueError: If `antibody.antibody_type` is not in
-            `SUPPORTED_ANTIBODY_TYPES`; if `heavy_chain`, `light_chain`, or
-            `single_chain_sequence` is set but fails
-            `validate_amino_acid_sequence`; or if all three are `None` (no
-            usable antibody sequence).
-    """
+    examples = [
+        _to_affinity_example(antibody, antigen_sequence, query_id) for antibody in antibodies
+    ]
+    batch = collate_rank_batch(
+        examples,
+        predictor.antibody_tokenizer,
+        predictor.antigen_tokenizer,
+    )
+    batch = _move_rank_batch(batch, next(predictor.model.parameters()).device)
+
+    predictor.model.eval()
+    with torch.no_grad():
+        scores = predictor.model(batch)
+
+    result = pd.DataFrame({
+        "query_id": query_id,
+        "antibody_id": [antibody.antibody_id for antibody in antibodies],
+        "score": scores.detach().cpu().tolist(),
+        "model_name": predictor.model_name,
+    })
+    result["rank"] = result["score"].rank(method="min", ascending=False).astype(int)
+    return result[list(OUTPUT_COLUMNS)]
+
+
+def rank_antibodies_with_predictor(
+    antigen_sequence: str | None,
+    antibodies: Sequence[AntibodyInput],
+    predictor: AffinityPredictor,
+    query_id: str = "query_0",
+) -> pd.DataFrame:
+    """Return `score_antibodies_with_predictor` sorted by score descending."""
+    result = score_antibodies_with_predictor(antigen_sequence, antibodies, predictor, query_id)
+    return result.sort_values(["query_id", "score"], ascending=[True, False], kind="stable").reset_index(drop=True)
+
+
+def rank_antibody_table_with_predictor(
+    input_table: pd.DataFrame,
+    predictor: AffinityPredictor,
+) -> pd.DataFrame:
+    """Rank every `query_id` group in an input table."""
+    _validate_input_table(input_table)
+
+    outputs: list[pd.DataFrame] = []
+    for query_id, group in input_table.groupby("query_id", sort=False):
+        antigen_sequence = _single_antigen_sequence(group, str(query_id))
+        antibodies = [_row_to_antibody_input(row) for _, row in group.iterrows()]
+        outputs.append(
+            rank_antibodies_with_predictor(
+                antigen_sequence,
+                antibodies,
+                predictor,
+                query_id=str(query_id),
+            )
+        )
+    if not outputs:
+        raise ValueError("input_table must contain at least one row")
+    return pd.concat(outputs, ignore_index=True)[list(OUTPUT_COLUMNS)]
+
+
+def _load_registry(path: Path) -> dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"Model registry not found: {path}")
+    with path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    if not isinstance(raw, dict):
+        raise ValueError(f"Model registry must contain a top-level mapping: {path}")
+    return raw
+
+
+def _torch_load_checkpoint(path: Path, map_location: str):
+    """Load project checkpoints that may contain Config dataclasses."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
+def _registry_path(registry_path: Path, value: object, field_name: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError(f"Registry field {field_name!r} must be a path string, got {value!r}")
+    path = Path(value)
+    if not path.is_absolute():
+        path = registry_path.parent.parent / path if registry_path.parent.name == "configs" else registry_path.parent / path
+    if not path.exists():
+        raise FileNotFoundError(f"Registry field {field_name!r} points to a missing path: {path}")
+    return path
+
+
+def _validate_input_table(input_table: pd.DataFrame) -> None:
+    missing = [column for column in INPUT_COLUMNS if column not in input_table.columns]
+    if missing:
+        raise ValueError(f"input_table is missing required column(s): {missing}")
+    if input_table.empty:
+        raise ValueError("input_table must contain at least one row")
+    if input_table[["query_id", "antibody_id"]].isna().any().any():
+        raise ValueError("query_id and antibody_id must not contain missing values")
+    duplicated = input_table.duplicated(subset=["query_id", "antibody_id"])
+    if duplicated.any():
+        rows = input_table.loc[duplicated, ["query_id", "antibody_id"]].to_dict(orient="records")
+        raise ValueError(f"(query_id, antibody_id) must be unique; duplicates: {rows[:10]}")
+
+
+def _single_antigen_sequence(group: pd.DataFrame, query_id: str) -> str | None:
+    values = {_optional_str(value) for value in group["antigen_sequence"].tolist()}
+    if len(values) > 1:
+        raise ValueError(
+            f"query_id {query_id!r} has inconsistent antigen_sequence values"
+        )
+    antigen_sequence = next(iter(values))
+    _validate_optional_sequence(antigen_sequence, "antigen_sequence")
+    return antigen_sequence
+
+
+def _row_to_antibody_input(row: pd.Series) -> AntibodyInput:
+    antibody_type = _optional_str(row["antibody_type"])
+    if antibody_type is None:
+        raise ValueError(f"antibody_id {row['antibody_id']!r} has missing antibody_type")
+    return AntibodyInput(
+        antibody_id=str(row["antibody_id"]),
+        heavy_chain=_optional_str(row["heavy_chain"]),
+        light_chain=_optional_str(row["light_chain"]),
+        single_chain_sequence=_optional_str(row["single_chain_sequence"]),
+        antibody_type=antibody_type,  # type: ignore[arg-type]
+    )
+
+
+def _to_affinity_example(
+    antibody: AntibodyInput,
+    antigen_sequence: str | None,
+    query_id: str,
+) -> AffinityExample:
     if antibody.antibody_type not in SUPPORTED_ANTIBODY_TYPES:
         raise ValueError(
             f"AntibodyInput {antibody.antibody_id!r} has unsupported antibody_type "
@@ -240,10 +312,7 @@ def _to_affinity_example(antibody: AntibodyInput, antigen_sequence: str | None) 
         "single_chain_sequence": antibody.single_chain_sequence,
     }
     for chain_name, chain in chains.items():
-        if chain is not None and not validate_amino_acid_sequence(chain):
-            raise ValueError(
-                f"AntibodyInput {antibody.antibody_id!r} has an invalid {chain_name}: {chain!r}"
-            )
+        _validate_optional_sequence(chain, f"{antibody.antibody_id}.{chain_name}")
     if all(chain is None for chain in chains.values()):
         raise ValueError(
             f"AntibodyInput {antibody.antibody_id!r} has no usable antibody sequence "
@@ -261,21 +330,23 @@ def _to_affinity_example(antibody: AntibodyInput, antigen_sequence: str | None) 
         antigen_key=None,
         rank_label=0.0,
         label_kind="unknown",
-        group_id="user_query",
+        group_id=query_id,
     )
 
 
+def _optional_str(value: object) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _validate_optional_sequence(sequence: str | None, field_name: str) -> None:
+    if sequence is not None and not validate_amino_acid_sequence(sequence):
+        raise ValueError(f"{field_name} is not a valid amino-acid sequence: {sequence!r}")
+
+
 def _move_rank_batch(batch: RankBatch, device: torch.device) -> RankBatch:
-    """Return a copy of `batch` with every tensor moved to `device`.
-
-    Args:
-        batch: A `RankBatch` (spec §5.3).
-        device: Target device, e.g. `next(model.parameters()).device`.
-
-    Returns:
-        A new `RankBatch` with all tensor fields moved to `device`;
-        `record_ids`/`group_ids` are passed through unchanged.
-    """
     return RankBatch(
         antibody_tokens=batch.antibody_tokens.to(device),
         antibody_mask=batch.antibody_mask.to(device),

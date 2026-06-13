@@ -17,6 +17,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 _VALID_AA = frozenset("ACDEFGHIKLMNPQRSTVWYX")  # X = any AA (IUPAC), handled by ESMC
+_STANDARD_AA = frozenset("ACDEFGHIKLMNPQRSTVWY")
+_SARS_COV_2_RBD = (
+    "RVQPTESIVRFPNITNLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFKCYGVSPTK"
+    "LNDLCFTNVYADSFVIRGDEVRQIAPGQTGKIADYNYKLPDDFTGCVIAWNSNNLDSKVGGNYNYLY"
+    "RLFRKSNLKPFERDISTEIYQAGSTPCNGVEGFNCYFPLQSYGFQPTNGVGYQPYRVVVLSFELLHA"
+    "PATVCGPKKSTNLVKNKCVNF"
+)
+_SARS_COV_2_RBD_UNIPROT_START = 319
+_SARS_COV_2_ABRANK_OFFSET = 1
+_SARS_COV_2_MUTANT_RE = re.compile(r"^SARS_CoV_2_([A-Z])(\d+)([A-Z])$")
 
 def _seq(val):
     if val is None: return None
@@ -27,6 +37,42 @@ def _seq(val):
 
 def _sanitize(name):
     return re.sub(r"[^A-Za-z0-9_]", "_", str(name).strip())
+
+def _derive_sars_cov_2_rbd_mutant(ag_key):
+    """Derive AbRank RBD single-mutant antigens from Wuhan-Hu-1 RBD.
+
+    AbRank's RBD-escape entries use numbering that is one residue lower than
+    UniProt P0DTC2. For example, AbRank E483 maps to UniProt E484.
+    """
+    m = _SARS_COV_2_MUTANT_RE.match(ag_key)
+    if not m:
+        return None
+
+    ref, abrank_pos, alt = m.group(1), int(m.group(2)), m.group(3)
+    if ref not in _STANDARD_AA or alt not in _STANDARD_AA:
+        return None
+
+    uniprot_pos = abrank_pos + _SARS_COV_2_ABRANK_OFFSET
+    idx = uniprot_pos - _SARS_COV_2_RBD_UNIPROT_START
+    if idx < 0 or idx >= len(_SARS_COV_2_RBD):
+        return None
+    if _SARS_COV_2_RBD[idx] != ref:
+        return None
+
+    seq = list(_SARS_COV_2_RBD)
+    seq[idx] = alt
+    return "".join(seq)
+
+def _antigen_sequence_and_source(row, ag_key):
+    ag_seq = _seq(row.get("Ag_seq"))
+    if ag_seq:
+        return ag_seq, "provided"
+
+    derived = _derive_sars_cov_2_rbd_mutant(ag_key)
+    if derived:
+        return derived, "retrieved"
+
+    return None, "missing"
 
 STUDY_ID="AbRank"; TABLE_ID="dataset"
 SOURCE_FILE="data/binding/AbRank_dataset.csv.zip"
@@ -63,8 +109,7 @@ def _make_base(source_row, row, ag_key, ag_name, ag_seq, ag_src):
 def _build_records(source_row, row):
     ag_raw  = str(row.get("Ag_name","")).strip()
     ag_key  = _sanitize(ag_raw) if ag_raw else "unknown"
-    ag_seq  = _seq(row.get("Ag_seq"))
-    ag_src  = "provided" if ag_seq else "missing"
+    ag_seq, ag_src = _antigen_sequence_and_source(row, ag_key)
     base    = _make_base(source_row, row, ag_key, ag_raw, ag_seq, ag_src)
     heavy   = base["heavy_chain"]
     records = []

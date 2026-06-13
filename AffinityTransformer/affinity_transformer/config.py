@@ -27,19 +27,39 @@ class DataConfig:
 
     Attributes:
         train_path: Path to the training `records.parquet`/`records.csv`
-            (standard processed table, spec §3).
+            (standard processed table, spec §3), or None when an automatic
+            split will be built from `all_records_path`.
         valid_path: Path to the validation processed table, or None if no
             held-out validation set is configured.
+        all_records_path: Path to the merged processed table used by automatic
+            split strategies, or None in explicit split mode.
+        test_path: Path to the test processed table, or None if no final test
+            set is configured.
+        split_strategy: One of "none", "debug_record_split", or
+            "group_holdout_split". "none" means train/valid/test paths are
+            supplied explicitly.
+        split_dir: Directory where automatic splits are written, or None in
+            explicit split mode.
+        valid_fraction: Fraction of records/groups reserved for validation in
+            automatic split mode.
+        test_fraction: Fraction of records/groups reserved for test in
+            automatic split mode.
         max_pairs_per_group: Maximum number of pairwise examples sampled
             per `group_id` (see `build_pairs`).
         seed: Random seed used for pair sampling and any other randomness
             in the data pipeline.
     """
 
-    train_path: Path
+    train_path: Path | None
     valid_path: Path | None
     max_pairs_per_group: int
     seed: int
+    all_records_path: Path | None = None
+    test_path: Path | None = None
+    split_strategy: str = "none"
+    split_dir: Path | None = None
+    valid_fraction: float = 0.1
+    test_fraction: float = 0.1
 
 
 @dataclass
@@ -95,6 +115,7 @@ class Config:
 
 
 _DATA_REQUIRED_KEYS = ("train_path", "valid_path", "max_pairs_per_group", "seed")
+_VALID_SPLIT_STRATEGIES = {"none", "debug_record_split", "group_holdout_split"}
 _MODEL_REQUIRED_KEYS = ("antibody_encoder", "antigen_encoder", "d_model", "use_cross_attention")
 _TRAIN_REQUIRED_KEYS = ("batch_size", "lr", "epochs", "device")
 
@@ -195,6 +216,34 @@ def _require_existing_path(value: Any, field_name: str) -> Path:
     return resolved
 
 
+def _optional_existing_path(value: Any, field_name: str) -> Path | None:
+    """Convert `value` to an existing `Path`, preserving `None`.
+
+    Args:
+        value: Raw YAML value.
+        field_name: Dotted field name, used in error messages.
+
+    Returns:
+        `None` if `value is None`, otherwise an existing `Path`.
+
+    Raises:
+        ValueError: If `value` is not None and not path-like.
+        FileNotFoundError: If the resulting path does not exist.
+    """
+    if value is None:
+        return None
+    return _require_existing_path(value, field_name)
+
+
+def _optional_path(value: Any, field_name: str) -> Path | None:
+    """Convert `value` to `Path`, preserving `None` and not checking existence."""
+    if value is None:
+        return None
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"Config field '{field_name}' must be a path string or null, got {value!r}")
+    return Path(value)
+
+
 def _build_data_config(section: dict[str, Any]) -> DataConfig:
     """Build `DataConfig` from the `data` section of a config file.
 
@@ -211,20 +260,54 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
     """
     _require_keys(section, _DATA_REQUIRED_KEYS, "data")
 
-    train_path = _require_existing_path(section["train_path"], "data.train_path")
+    split_strategy = str(section.get("split_strategy", "none"))
+    if split_strategy not in _VALID_SPLIT_STRATEGIES:
+        raise ValueError(
+            f"Config field 'data.split_strategy' must be one of "
+            f"{sorted(_VALID_SPLIT_STRATEGIES)}, got {split_strategy!r}"
+        )
 
-    valid_path_value = section["valid_path"]
-    valid_path: Path | None
-    if valid_path_value is None:
-        valid_path = None
+    all_records_path = _optional_existing_path(
+        section.get("all_records_path"), "data.all_records_path"
+    )
+    valid_path = _optional_existing_path(section["valid_path"], "data.valid_path")
+    test_path = _optional_existing_path(section.get("test_path"), "data.test_path")
+    split_dir = _optional_path(section.get("split_dir"), "data.split_dir")
+
+    if split_strategy == "none":
+        train_path = _require_existing_path(section["train_path"], "data.train_path")
     else:
-        valid_path = _require_existing_path(valid_path_value, "data.valid_path")
+        train_path = _optional_existing_path(section["train_path"], "data.train_path")
+        if all_records_path is None:
+            raise ValueError(
+                "Config field 'data.all_records_path' is required when "
+                f"data.split_strategy={split_strategy!r}"
+            )
+        if split_dir is None:
+            raise ValueError(
+                "Config field 'data.split_dir' is required when "
+                f"data.split_strategy={split_strategy!r}"
+            )
+
+    valid_fraction = float(section.get("valid_fraction", 0.1))
+    test_fraction = float(section.get("test_fraction", 0.1))
+    if split_strategy != "none" and not (0.0 < valid_fraction + test_fraction < 1.0):
+        raise ValueError(
+            "data.valid_fraction + data.test_fraction must be greater than 0 "
+            f"and less than 1 in automatic split mode, got {valid_fraction + test_fraction}"
+        )
 
     return DataConfig(
         train_path=train_path,
         valid_path=valid_path,
         max_pairs_per_group=int(section["max_pairs_per_group"]),
         seed=int(section["seed"]),
+        all_records_path=all_records_path,
+        test_path=test_path,
+        split_strategy=split_strategy,
+        split_dir=split_dir,
+        valid_fraction=valid_fraction,
+        test_fraction=test_fraction,
     )
 
 
