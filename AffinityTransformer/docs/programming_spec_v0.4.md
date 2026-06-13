@@ -230,6 +230,7 @@ drop_reason: str | None
 4. `label_kind = "binary"` 的记录只能产生正负 pair，同标签之间不能产生 pair。
 5. `antigen_sequence = None` 时，`antigen_source` 必须是 `"missing"`。
 6. `keep_for_training = False` 的记录可以留在表里，但 dataset 必须过滤掉它。
+7. `antigen_source = "retrieved"` 时，对应 `convert.py` 必须额外定义常量 `ANTIGEN_SOURCE_NOTE = "retrieved: <accession>, <片段范围/物种等依据>"`。`ANTIGEN_SOURCE_NOTE` 不是 `records.parquet` 的字段（`antigen_source` 列仍只取 `"provided" | "retrieved" | "missing"` 枚举值，满足 `validate_processed_table.py` 的校验），仅供 `gen_manifest.py` 提取后写入 `manifest.csv` 的 `notes` 列，作为随 git 跟踪、可追溯的抗原来源记录。
 
 
 
@@ -256,32 +257,72 @@ scripts/prepare/binding/kothiwal2025htp/DCC_ec50/
 3. 如果一个 study 只有一个表，也仍然保留 `table_id`，可以使用 `dataset`、`default` 或更具体的表名。
 4. `processed/binding/{study_id}/{table_id}/` 必须和 `scripts/prepare/binding/{study_id}/{table_id}/` 一一对应。
 
-`scripts/prepare/binding/manifest.csv` 必须记录所有 binding 源表：
+`scripts/prepare/binding/gen_manifest.py` 从所有 `convert.py` 的常量定义中自动重新生成两个元数据文件，必须可重复运行且结果确定（不依赖网络、不依赖运行顺序）：
+
+- `scripts/prepare/binding/manifest.csv` —— 全部 binding 源表清单
+- `scripts/prepare/binding/antigen_missing_summary.csv` —— 抗原检索参考表，数据源是脚本内人工维护的 `ANTIGEN_REFS` 列表
+
+两个文件生成后都要复制到 `processed/binding/`；`prepare_all.sh` 在运行任何 `prepare.sh` 之前必须先执行一次 `gen_manifest.py`。
+
+`manifest.csv` 必须记录所有 binding 源表，列为：
 
 ```text
-source_file
-study_id
-table_id
-prepare_dir
-processed_dir
-status
-reason
+study_id          数据集标识，对应 scripts/prepare/binding/{study_id}/
+table_id          子表标识，对应 .../{study_id}/{table_id}/
+csv_name          源 CSV 文件名（取自 SOURCE_FILE），用于追溯原始数据
+antibody_type     Fv | scFv | VHH | Fab | IgG | unknown
+antigen_key       抗原标识，与 antigen_missing_summary.csv 的 antigen_key 对应
+antigen_name      抗原名称
+antigen_source    provided | retrieved | missing
+metric_name       指标名
+label_kind        experimental | predicted | binary | unknown
+status            ready | blocked（见下）
+notes             备注，由脚本根据 convert.py 内容自动推断（zip/VHH裁剪/抗原缺失等）
 ```
+
+早期草案中的 `source_file`、`reason` 分别由 `csv_name`、`notes` 承担；`prepare_dir`（`scripts/prepare/binding/{study_id}/{table_id}/`）与 `processed_dir`（`processed/binding/{study_id}/{table_id}/`）不作为独立列，按命名规则 4 由 `study_id`/`table_id` 直接推出，不再重复存储。
 
 `status` 只允许：
 
 ```text
-planned
 ready
-excluded
 blocked
 ```
 
+`ready` 表示该表已实现且 `prepare.sh` 可跑通——即使 `antigen_source = "missing"` 也算 `ready`，因为缺失抗原不阻塞训练记录生成（见 §3 规则 5）。`blocked` 表示存在结构性问题（例如源 CSV 没有抗原列、无法构造 `group_id`），手工维护于 `gen_manifest.py` 的 `BLOCKED` 列表，原因写入 `notes`。`planned`、`excluded` 为预留取值，分别供"已规划但未实现"、"明确排除"的源表使用；目前所有源表均为 `ready` 或 `blocked`。
+
+`antigen_missing_summary.csv` 列为：
+
+```text
+antigen_key            抗原标识，与 manifest.csv 的 antigen_key 对应
+antigen_name           抗原名称
+is_protein             是否为蛋白质（小分子抗原如 fluorescein 为 False）
+likely_uniprot_or_pdb  候选 UniProt accession 或 PDB ID
+antigen_species        物种
+retrieval_notes        检索依据、片段范围、不确定性说明
+source_url             由 likely_uniprot_or_pdb 推导的可点击来源链接
+```
+
+`source_url` 推导规则：`likely_uniprot_or_pdb` 形如 UniProt accession（如 `P00698`）时取 `https://www.uniprot.org/uniprotkb/{accession}/entry`；形如 PDB ID（如 `7LYL`）时取 `https://www.rcsb.org/structure/{PDB_ID}`；无法映射为单一记录（如 "check paper"、列出多个候选）时留空。
+
+`manifest.csv` 中 `antigen_source == "missing"` 的每个 `antigen_key`，都应在 `antigen_missing_summary.csv` 中有对应行（来自 `ANTIGEN_REFS`），作为待检索清单。一旦某个 `antigen_key` 在所有引用它的 `convert.py` 中都已写入 `ANTIGEN_SOURCE = "retrieved"`（及 `ANTIGEN_SOURCE_NOTE`），应将其从 `ANTIGEN_REFS` 中移除，使重新生成的 `antigen_missing_summary.csv` 自动只反映剩余未解决的抗原；已解决抗原的溯源记录永久保留在对应 `convert.py` 的 `ANTIGEN_SOURCE_NOTE` 中（随 git 跟踪）。
+
 规则：
 
-1. 当前 metadata 中的 86 个 binding 源文件都必须在 manifest 中出现。
-2. 暂不处理的源文件也必须写入 manifest，并给出 `excluded` 或 `blocked` 的原因。
+1. 当前 86 个 binding 源文件都必须在 manifest 中出现。
+2. 暂不处理的源文件也必须写入 manifest，并在 `notes` 中给出 `blocked`（或未来 `excluded`）的原因。
 3. `prepare_all.sh` 只读取 manifest 中 `status = "ready"` 的行并逐个运行对应 `prepare.sh`。
+
+### 抗原序列检索工作流
+
+为避免一次性大批量写入 `ANTIGEN_SEQ`/`ANTIGEN_SOURCE` 导致错误扩散到多张表，抗原序列检索必须按以下流程进行：
+
+1. **分批**：以 `antigen_missing_summary.csv` 的行为单位，每批处理少量（建议 3–5 个）`antigen_key`。
+2. **候选先行**：每个 `antigen_key` 先给出候选 `likely_uniprot_or_pdb`、`source_url` 及匹配依据（物种、序列长度、关键词、与论文描述的一致性），不直接修改 `convert.py`；依据不充分的（名称模糊、多个候选、物种不确定）必须标注为低置信度，等待人工确认。
+3. **确认后写入**：经确认/修正后才写入对应 `convert.py` 的 `ANTIGEN_SEQ`/`ANTIGEN_SOURCE`/`ANTIGEN_SOURCE_NOTE`：`ANTIGEN_SEQ` 为实际序列；`ANTIGEN_SOURCE = "retrieved"`（枚举值，写入 `records.parquet`/`manifest.csv` 的 `antigen_source` 列）；`ANTIGEN_SOURCE_NOTE = "retrieved: <accession>, <片段范围/物种等依据>"`（详细溯源，与 `antigen_missing_summary.csv` 的 `source_url` 对应，确保可溯源，见 §3 规则 7）。
+4. **同步移除待办项**：对每个已写入 `ANTIGEN_SOURCE = "retrieved"` 的 `antigen_key`，从 `gen_manifest.py` 的 `ANTIGEN_REFS` 中移除对应条目。
+5. **重新生成与验证**：每批完成后运行 `gen_manifest.py` 重新生成 `manifest.csv`/`antigen_missing_summary.csv`，重新运行受影响表的 `prepare.sh`，并跑通测试套件。
+6. 新增的检索/生成机制（如本节、`gen_manifest.py`、`ANTIGEN_REFS`、`antigen_missing_summary.csv` 及其列定义）必须先写入本文档，再实现。
 
 `prepare.sh` 规范：
 
@@ -302,7 +343,7 @@ set -euo pipefail
 3. 转换脚本必须生成 `records.parquet` 或 `records.csv`。
 4. 同时生成 `qc_summary.csv` 和 `dropped_records.csv`。
 5. 每次运行覆盖自己的输出目录可以接受，但不得删除其他数据集输出。
-6. 如果脚本需要外部下载抗原序列，必须写入 `antigen_source` 和来源说明；早期 MVP 可以直接标记 missing。
+6. 如果脚本需要外部下载抗原序列，必须遵循「抗原序列检索工作流」一节，写入 `antigen_source` 和来源说明（并与 `antigen_missing_summary.csv` 的 `source_url` 对应）；早期 MVP 可以直接标记 `missing`。
 7. `prepare_all.sh` 可以把所有 `ready` 处理单元的 `records.parquet` 汇总为 `processed/binding/all_records.parquet`，但汇总表必须保留 `study_id`、`table_id`、`dataset_id` 和 `source_file`。
 
 共享验证脚本 `scripts/prepare/validate_processed_table.py` 是允许存在的，因为它不是通用 raw parser，只检查最终表是否符合 schema。

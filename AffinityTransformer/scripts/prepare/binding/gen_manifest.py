@@ -39,7 +39,7 @@ def _has_zip(source_file):
     return source_file.lower().endswith(".zip")
 
 
-def _infer_notes(study_id, table_id, text, antigen_source, label_kind, source_file):
+def _infer_notes(study_id, table_id, text, antigen_source, antigen_source_note, label_kind, source_file):
     notes = []
     if _has_zip(source_file):
         notes.append("zip; streaming parquet write")
@@ -51,6 +51,8 @@ def _infer_notes(study_id, table_id, text, antigen_source, label_kind, source_fi
         notes.append("binary label (0/1)")
     if antigen_source == "missing":
         notes.append("antigen seq missing")
+    if antigen_source == "retrieved" and antigen_source_note:
+        notes.append(antigen_source_note)
     if "censored_measurement" in text:
         notes.append("censored values dropped")
     if "SKIP_ROWS" in text:
@@ -98,8 +100,6 @@ ANTIGEN_REFS = [
     ("H9_HA_HK",             "Influenza A H9 HA (A/HK/1073/99)",             True,  "A/HK/1073/99 HA",                "Influenza A",     "GenBank AF156378; use ecto-domain"),
     ("H1_HA_PR8",            "Influenza A H1 HA (PR8 strain)",               True,  "A/Puerto Rico/8/1934 HA",        "Influenza A",     "UniProt P03452; signal-peptide cleaved; mature aa 18-566"),
     ("H3_HA_HK68",           "Influenza A H3 HA (A/HK/1/68)",                True,  "A/Hong Kong/1/1968 HA",          "Influenza A",     "UniProt P03437; mature ecto-domain"),
-    # hutchinson2023enhancement
-    ("HEL",                  "Hen egg lysozyme",                              True,  "P00698",                         "Gallus gallus",   "UniProt P00698; full mature sequence (aa 19-147 after signal cleavage)"),
     # hie2023efficient
     ("CoV2_WT_S6P",          "SARS-CoV-2 WT Spike S6P (hexapro)",            True,  "7LYL",                           "SARS-CoV-2",      "PDB 7LYL; 6-proline stabilised prefusion; use sequence from PDB SEQRES"),
     ("CoV2_Beta_S6P",        "SARS-CoV-2 Beta (B.1.351) Spike S6P",          True,  "7LYL+Beta mutations",            "SARS-CoV-2",      "Apply Beta mutations (K417N/E484K/N501Y) to 7LYL sequence"),
@@ -108,26 +108,11 @@ ANTIGEN_REFS = [
     ("H4_HA_Hubei",          "Influenza A H4 HA (A/Hubei/1/2010)",           True,  "A/Hubei/1/2010 HA",              "Influenza A",     "GenBank JF730435 or similar H4 strain; use ecto-domain"),
     ("H7_HA_HK16",           "Influenza A H7 HA (A/HK/2014/2016)",           True,  "A/Hong Kong/2014/2016 HA",       "Influenza A",     "GISAID or NCBI; use ecto-domain"),
     ("Ebola_GP",             "Ebola virus glycoprotein (mAb114 target)",     True,  "6MDT",                           "Zaire ebolavirus", "PDB 6MDT; use GP1+GP2 ecto-domain; remove mucin-like domain aa 313-461 if needed"),
-    # shanehsazzadeh2024igdesign
-    ("IL17A",                "Interleukin-17A",                               True,  "Q16552",                         "Homo sapiens",    "UniProt Q16552; mature form aa 24-155"),
-    ("ACVR2B",               "Activin receptor type-2B",                     True,  "Q13705",                         "Homo sapiens",    "UniProt Q13705; extracellular domain aa 19-137"),
-    ("C5",                   "Complement component C5",                      True,  "P01031",                         "Homo sapiens",    "UniProt P01031; full-length; eculizumab binds MG7 domain"),
-    ("FXI",                  "Coagulation factor XI",                        True,  "P03951",                         "Homo sapiens",    "UniProt P03951; mature aa 19-625; apple4 domain is primary epitope"),
-    ("IL36R",                "Interleukin-36 receptor (IL1RL2)",              True,  "Q9Y5U5",                         "Homo sapiens",    "UniProt Q9Y5U5; extracellular domain aa 19-338"),
-    ("TSLP",                 "Thymic stromal lymphopoietin",                  True,  "Q969D9",                         "Homo sapiens",    "UniProt Q969D9; mature aa 29-159"),
-    ("TNFRSF9",              "TNF receptor superfamily member 9 (4-1BB)",    True,  "Q07011",                         "Homo sapiens",    "UniProt Q07011; CRD2-CRD4 extracellular domain aa 24-186"),
-    # shanehsazzadeh2023unlocking
-    ("HER2",                 "Human epidermal growth factor receptor 2",     True,  "P04626",                         "Homo sapiens",    "UniProt P04626; extracellular domain aa 23-645 (domains I-IV)"),
-    ("Trastuzumab_target",   "HER2 (trastuzumab target, same as HER2)",      True,  "P04626",                         "Homo sapiens",    "Same as HER2; trastuzumab binds domain IV"),
     # rosace2023automated
-    ("TNF_adalimumab",       "TNF-alpha (adalimumab target)",                True,  "P01375",                         "Homo sapiens",    "UniProt P01375; mature trimeric TNF-alpha; aa 77-233"),
     ("IL12B_golimumab",      "IL-12 p40 subunit (golimumab target)",         True,  "P29460",                         "Homo sapiens",    "UniProt P29460; mature form aa 23-328; golimumab also binds IL-23"),
     # koenig2017mutational
     ("VEGF_g6",              "VEGF (G6 antibody context)",                   True,  "P15692",                         "Homo sapiens",    "UniProt P15692; VEGF-A165; aa 27-232 mature form"),
-    # hutchinson2023enhancement continued
-    ("HEL_multi",            "Hen egg lysozyme (multi-KD context)",          True,  "P00698",                         "Gallus gallus",   "Same as HEL; UniProt P00698"),
     # jain2024assessment
-    ("HEL_jain",             "Hen egg lysozyme (Jain context)",              True,  "P00698",                         "Gallus gallus",   "UniProt P00698; same mature sequence"),
     ("mLy_jain",             "Mouse lysozyme",                               True,  "P00695 or P08905",               "Mus musculus",    "UniProt P00695 (Lyz1) or P08905 (Lyz2); use mature form"),
     # warszawski2019
     ("d44_antigen",          "d44 antibody antigen (barnase or similar)",    True,  "check paper",                    "unknown",         "Verify from Warszawski 2019 paper; likely barnase P00967 or similar protein"),
@@ -140,18 +125,12 @@ ANTIGEN_REFS = [
     # shanker2024unsupervised
     ("SARS-CoV-2_SA58",      "SARS-CoV-2 Spike (SA58 antibody target)",     True,  "7LYL or variant",                "SARS-CoV-2",      "SA58 targets SARS-CoV-2 Spike; use variant-appropriate sequence"),
     ("SARS-CoV-2_Ly1404",    "SARS-CoV-2 Spike (Ly1404 antibody target)",   True,  "7LYL or variant",                "SARS-CoV-2",      "Ly1404 targets SARS-CoV-2 Spike; use variant-appropriate sequence"),
-    # makowski2022cooptimization
-    ("MET",                  "MET proto-oncogene receptor (emibetuzumab)",   True,  "P08581",                         "Homo sapiens",    "UniProt P08581; SEMA domain aa 25-519; emibetuzumab binds extracellular domain"),
-    ("Ovalbumin",            "Ovalbumin (OVA, model antigen)",               True,  "P01012",                         "Gallus gallus",   "UniProt P01012; full-length OVA aa 24-386 after signal cleavage"),
     # peterson2024integrated
     ("H1_HA_peterson",       "Influenza H1 HA (peterson integrated study)", True,  "check paper",                    "Influenza A",     "Verify specific H1 strain from Peterson 2024 paper"),
     # kirby2024retrospective
     ("CoV2_kirby",           "SARS-CoV-2 Spike (kirby retrospective)",      True,  "7LYL or RBD",                    "SARS-CoV-2",      "Verify whether full Spike or just RBD from Kirby 2024 paper"),
-    # cognano
-    ("hTNFa",                "Human TNF-alpha (cognano AVIDa-hTNFa)",        True,  "P01375",                         "Homo sapiens",    "UniProt P01375; same as adalimumab target; mature TNF-alpha aa 77-233"),
     # tsuruta
     ("CoV2_tsuruta",         "SARS-CoV-2 (tsuruta sarscov2 binary)",        True,  "7LYL or RBD",                    "SARS-CoV-2",      "Verify from Tsuruta 2024 paper; likely RBD or Spike ecto-domain"),
-    ("hIL6_tsuruta",         "Human IL-6 (tsuruta avida hIL6)",             True,  "P05231",                         "Homo sapiens",    "UniProt P05231; mature IL-6 aa 29-212"),
     # li2023machine / engelhart
     ("CoV2_RBD_li",          "SARS-CoV-2 RBD (li2023machine)",              True,  "6M0J",                           "SARS-CoV-2",      "PDB 6M0J chain E; RBD aa 319-541; or UniProt P0DTC2 aa 319-541"),
     ("CoV2_RBD_eng",         "SARS-CoV-2 RBD (engelhart2022dataset)",       True,  "6M0J",                           "SARS-CoV-2",      "Same as li2023machine; PDB 6M0J chain E"),
@@ -160,7 +139,26 @@ ANTIGEN_REFS = [
 ANTIGEN_REFS_HEADER = [
     "antigen_key", "antigen_name", "is_protein",
     "likely_uniprot_or_pdb", "antigen_species", "retrieval_notes",
+    "source_url",
 ]
+
+# UniProt accessions are 6 chars: letter, digit, 3 alphanumeric, digit
+# (e.g. P00698, Q9Y5U5). PDB IDs are 4 chars starting with a digit
+# (e.g. 7LYL, 6M0J). Anything else (multiple candidates, "check paper",
+# strain names, "N/A (small molecule)", etc.) cannot be mapped to a
+# single record and is left blank.
+_UNIPROT_RE = re.compile(r'^[A-Z][0-9][A-Z0-9]{3}[0-9]$')
+_PDB_RE = re.compile(r'^[0-9][A-Za-z0-9]{3}$')
+
+
+def _source_url(accession):
+    """Derive a clickable source URL from likely_uniprot_or_pdb."""
+    acc = accession.strip()
+    if _UNIPROT_RE.match(acc):
+        return f"https://www.uniprot.org/uniprotkb/{acc}/entry"
+    if _PDB_RE.match(acc):
+        return f"https://www.rcsb.org/structure/{acc}"
+    return ""
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
@@ -190,10 +188,11 @@ def main():
         antigen_key    = _extract(text, "ANTIGEN_KEY",   "unknown")
         antigen_name   = _extract(text, "ANTIGEN_NAME",  "")
         antigen_source = _extract(text, "ANTIGEN_SOURCE","missing")
+        antigen_source_note = _extract(text, "ANTIGEN_SOURCE_NOTE", "")
         metric_name    = _extract(text, "METRIC_NAME",   "unknown")
         label_kind     = _extract(text, "LABEL_KIND",    "experimental")
         status         = "ready"
-        notes          = _infer_notes(study_id, table_id, text, antigen_source, label_kind, source_file)
+        notes          = _infer_notes(study_id, table_id, text, antigen_source, antigen_source_note, label_kind, source_file)
 
         # Special case: AbRank has two metrics, no simple constants
         if study_id == "AbRank":
@@ -238,7 +237,9 @@ def main():
         w = csv.DictWriter(f, fieldnames=ANTIGEN_REFS_HEADER)
         w.writeheader()
         for ref in ANTIGEN_REFS:
-            w.writerow(dict(zip(ANTIGEN_REFS_HEADER, ref)))
+            row = dict(zip(ANTIGEN_REFS_HEADER[:-1], ref))
+            row["source_url"] = _source_url(row["likely_uniprot_or_pdb"])
+            w.writerow(row)
     print(f"Wrote {len(ANTIGEN_REFS)} rows → {missing_path}")
 
 
