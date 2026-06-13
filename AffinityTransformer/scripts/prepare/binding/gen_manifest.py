@@ -95,45 +95,16 @@ BLOCKED = [
 # Manually curated: UniProt/PDB suggestions for antigens not in source CSVs.
 
 ANTIGEN_REFS = [
-    # phillips2021binding
-    ("H1_HA_Solomon",        "Influenza A H1 HA (A/Solomon Islands/3/2006)", True,  "A/Solomon Islands/3/2006 HA",    "Influenza A",     "UniProt Q3HM16 or NCBI ABD59308; use ecto-domain aa 18-566"),
-    ("H9_HA_HK",             "Influenza A H9 HA (A/HK/1073/99)",             True,  "A/HK/1073/99 HA",                "Influenza A",     "GenBank AF156378; use ecto-domain"),
-    ("H1_HA_PR8",            "Influenza A H1 HA (PR8 strain)",               True,  "A/Puerto Rico/8/1934 HA",        "Influenza A",     "UniProt P03452; signal-peptide cleaved; mature aa 18-566"),
-    ("H3_HA_HK68",           "Influenza A H3 HA (A/HK/1/68)",                True,  "A/Hong Kong/1/1968 HA",          "Influenza A",     "UniProt P03437; mature ecto-domain"),
-    # hie2023efficient
-    ("CoV2_WT_S6P",          "SARS-CoV-2 WT Spike S6P (hexapro)",            True,  "7LYL",                           "SARS-CoV-2",      "PDB 7LYL; 6-proline stabilised prefusion; use sequence from PDB SEQRES"),
-    ("CoV2_Beta_S6P",        "SARS-CoV-2 Beta (B.1.351) Spike S6P",          True,  "7LYL+Beta mutations",            "SARS-CoV-2",      "Apply Beta mutations (K417N/E484K/N501Y) to 7LYL sequence"),
-    ("CoV2_Omicron_S6P",     "SARS-CoV-2 Omicron (BA.1) Spike S6P",         True,  "7LYL+Omicron mutations",         "SARS-CoV-2",      "Apply BA.1 mutations to 7LYL sequence; 37 substitutions"),
-    ("H1_HA_Solomon_MEDI",   "Influenza A H1 HA (MEDI context)",             True,  "A/Solomon Islands/3/2006 HA",    "Influenza A",     "Same as H1_HA_Solomon; see hie2023efficient supplementary"),
-    ("H4_HA_Hubei",          "Influenza A H4 HA (A/Hubei/1/2010)",           True,  "A/Hubei/1/2010 HA",              "Influenza A",     "GenBank JF730435 or similar H4 strain; use ecto-domain"),
-    ("H7_HA_HK16",           "Influenza A H7 HA (A/HK/2014/2016)",           True,  "A/Hong Kong/2014/2016 HA",       "Influenza A",     "GISAID or NCBI; use ecto-domain"),
-    ("Ebola_GP",             "Ebola virus glycoprotein (mAb114 target)",     True,  "6MDT",                           "Zaire ebolavirus", "PDB 6MDT; use GP1+GP2 ecto-domain; remove mucin-like domain aa 313-461 if needed"),
-    # rosace2023automated
-    ("IL12B_golimumab",      "IL-12 p40 subunit (golimumab target)",         True,  "P29460",                         "Homo sapiens",    "UniProt P29460; mature form aa 23-328; golimumab also binds IL-23"),
-    # koenig2017mutational
-    ("VEGF_g6",              "VEGF (G6 antibody context)",                   True,  "P15692",                         "Homo sapiens",    "UniProt P15692; VEGF-A165; aa 27-232 mature form"),
-    # jain2024assessment
-    ("mLy_jain",             "Mouse lysozyme",                               True,  "P00695 or P08905",               "Mus musculus",    "UniProt P00695 (Lyz1) or P08905 (Lyz2); use mature form"),
-    # warszawski2019
-    ("d44_antigen",          "d44 antibody antigen (barnase or similar)",    True,  "check paper",                    "unknown",         "Verify from Warszawski 2019 paper; likely barnase P00967 or similar protein"),
-    # zimmerman2020antibody
-    ("fluorescein_zimm",     "Fluorescein (4-4-20 antibody target)",         False, "N/A (small molecule)",           "synthetic",       "Fluorescein is a small molecule (MW 332 Da); no protein sequence; antigen_source=missing is correct"),
-    # adams2017measuring
-    ("fluorescein_adams",    "Fluorescein (4-4-20 antibody target)",         False, "N/A (small molecule)",           "synthetic",       "Same as zimmerman; fluorescein has no sequence; antigen_source=missing is correct"),
-    # garbinski2023
-    ("garbinski_target",     "garbinski2023 kd target antigen",              True,  "check paper",                    "unknown",         "Verify antigen identity from Garbinski 2023 paper"),
-    # shanker2024unsupervised
-    ("SARS-CoV-2_SA58",      "SARS-CoV-2 Spike (SA58 antibody target)",     True,  "7LYL or variant",                "SARS-CoV-2",      "SA58 targets SARS-CoV-2 Spike; use variant-appropriate sequence"),
-    ("SARS-CoV-2_Ly1404",    "SARS-CoV-2 Spike (Ly1404 antibody target)",   True,  "7LYL or variant",                "SARS-CoV-2",      "Ly1404 targets SARS-CoV-2 Spike; use variant-appropriate sequence"),
-    # peterson2024integrated
-    ("H1_HA_peterson",       "Influenza H1 HA (peterson integrated study)", True,  "check paper",                    "Influenza A",     "Verify specific H1 strain from Peterson 2024 paper"),
-    # kirby2024retrospective
-    ("CoV2_kirby",           "SARS-CoV-2 Spike (kirby retrospective)",      True,  "7LYL or RBD",                    "SARS-CoV-2",      "Verify whether full Spike or just RBD from Kirby 2024 paper"),
-    # tsuruta
-    ("CoV2_tsuruta",         "SARS-CoV-2 (tsuruta sarscov2 binary)",        True,  "7LYL or RBD",                    "SARS-CoV-2",      "Verify from Tsuruta 2024 paper; likely RBD or Spike ecto-domain"),
-    # li2023machine / engelhart
-    ("CoV2_RBD_li",          "SARS-CoV-2 RBD (li2023machine)",              True,  "6M0J",                           "SARS-CoV-2",      "PDB 6M0J chain E; RBD aa 319-541; or UniProt P0DTC2 aa 319-541"),
-    ("CoV2_RBD_eng",         "SARS-CoV-2 RBD (engelhart2022dataset)",       True,  "6M0J",                           "SARS-CoV-2",      "Same as li2023machine; PDB 6M0J chain E"),
+    ("Fluorescein",          "Fluorescein (small molecule hapten)",          False, "N/A (small molecule)",           "synthetic",       "No protein sequence; keep antigen_source=missing unless a small-molecule featurizer is added"),
+    ("unknown_antigen",      "Unknown proprietary antigen",                  True,  "check paper",                    "unknown",         "Verify antigen identity from Garbinski 2023 paper/source before adding any sequence"),
+    ("H1_HA",                "Influenza A H1 hemagglutinin",                 True,  "check paper",                    "Influenza A",     "Peterson processed tables do not expose the strain; fill only after exact H1HA strain/construct is confirmed"),
+    ("CoV2_Beta_S2P",        "SARS-CoV-2 Beta variant Spike S2P",            True,  "variant-specific sequence",      "SARS-CoV-2",      "Need exact S2P/Beta construct sequence before filling; do not reuse Wuhan RBD silently"),
+    ("CoV2_Omicron_RBD",     "SARS-CoV-2 Omicron RBD",                       True,  "variant-specific sequence",      "SARS-CoV-2",      "Need exact Omicron lineage/construct sequence before filling"),
+    ("H4_Hubei_HA",          "Influenza A H4 HA (Hubei)",                    True,  "check strain accession",         "Influenza A",     "Need exact H4 Hubei strain and construct accession from Hie 2023 supplementary/source"),
+    ("H7_HK16_HA",           "Influenza A H7 HA (HK16)",                     True,  "check strain accession",         "Influenza A",     "Need exact H7 HK16 strain and construct accession from Hie 2023 supplementary/source"),
+    ("CoV2_BA1_Spike",       "SARS-CoV-2 BA.1 Spike",                        True,  "variant-specific sequence",      "SARS-CoV-2",      "Need exact BA.1 construct for Shanker 2024 before filling"),
+    ("CoV2_BQ11_Spike",      "SARS-CoV-2 BQ.1.1 Spike",                      True,  "variant-specific sequence",      "SARS-CoV-2",      "Need exact BQ.1.1 construct for Shanker 2024 before filling"),
+    ("CoV2_XBB15_Spike",     "SARS-CoV-2 XBB.1.5 Spike",                     True,  "variant-specific sequence",      "SARS-CoV-2",      "Need exact XBB.1.5 construct for Shanker 2024 before filling"),
 ]
 
 ANTIGEN_REFS_HEADER = [
@@ -200,7 +171,11 @@ def main():
             antigen_name  = "multiple antigens (see Ag_name column)"
             metric_name   = "neg_log10_kd_M; neg_log10_ic50_ugml"
             label_kind    = "experimental"
-            notes         = "multi-antigen; Kd+IC50 dual records; censored values dropped; zip streaming"
+            notes         = (
+                "multi-antigen; Kd+IC50 dual records; censored values dropped; "
+                "zip streaming; SARS-CoV-2 RBD single mutants derived from UniProt "
+                "P0DTC2 aa319-541 using AbRank position + 1"
+            )
 
         rows.append(dict(
             study_id=study_id, table_id=table_id, csv_name=csv_name,

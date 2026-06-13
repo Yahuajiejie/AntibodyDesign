@@ -209,6 +209,33 @@ def _is_finite_number(value: object) -> bool:
         return False
 
 
+def _parse_bool(value: object) -> bool:
+    """Parse a standard-table boolean cell strictly.
+
+    Args:
+        value: Cell value from `keep_for_training`.
+
+    Returns:
+        Boolean interpretation of `value`.
+
+    Raises:
+        ValueError: If `value` is not a recognized boolean representation.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, float) and value in (0.0, 1.0):
+        return bool(int(value))
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "f", "0", "no", "n"}:
+            return False
+    raise ValueError(f"Invalid boolean value for keep_for_training: {value!r}")
+
+
 def filter_trainable_records(records: pd.DataFrame) -> pd.DataFrame:
     """Keep only records usable for training.
 
@@ -230,7 +257,7 @@ def filter_trainable_records(records: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"records is missing required column(s): {missing}")
 
-    keep_mask = records["keep_for_training"].astype(bool)
+    keep_mask = records["keep_for_training"].apply(_parse_bool)
     finite_mask = records["rank_label"].apply(_is_finite_number)
     return records[keep_mask & finite_mask].reset_index(drop=True)
 
