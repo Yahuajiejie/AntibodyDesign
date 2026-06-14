@@ -48,6 +48,10 @@ class DataConfig:
             automatic split mode.
         max_pairs_per_group: Maximum number of pairwise examples sampled
             per `group_id` (see `build_pairs`).
+        pair_sample_strategy: Pair sampling policy passed to `build_pairs`.
+            `"absolute_cap"` preserves the legacy behavior.
+        pair_fraction: Fraction used by `"capped_proportional"` sampling.
+        min_pairs_per_group: Lower target used by `"capped_proportional"`.
         seed: Random seed used for pair sampling and any other randomness
             in the data pipeline.
         record_filter: Optional selector applied to `all_records_path` before
@@ -58,6 +62,9 @@ class DataConfig:
     valid_path: Path | None
     max_pairs_per_group: int
     seed: int
+    pair_sample_strategy: str = "absolute_cap"
+    pair_fraction: float | None = None
+    min_pairs_per_group: int = 1
     all_records_path: Path | None = None
     test_path: Path | None = None
     split_strategy: str = "none"
@@ -307,6 +314,11 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
         valid_path=valid_path,
         max_pairs_per_group=int(section["max_pairs_per_group"]),
         seed=int(section["seed"]),
+        pair_sample_strategy=str(section.get("pair_sample_strategy", "absolute_cap")),
+        pair_fraction=(
+            None if section.get("pair_fraction") is None else float(section["pair_fraction"])
+        ),
+        min_pairs_per_group=int(section.get("min_pairs_per_group", 1)),
         all_records_path=all_records_path,
         test_path=test_path,
         split_strategy=split_strategy,

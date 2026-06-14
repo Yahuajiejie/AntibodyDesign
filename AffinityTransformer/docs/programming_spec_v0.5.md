@@ -120,7 +120,20 @@ AffinityTransformer/
     expression/
     ...
   scripts/
-    filter_records.py                # 从标准表生成可复现训练子集
+    filter_records.py                # 兼容入口，转发到 scripts/data/filter_records.py
+    data/
+      inspect_records.py             # 全量/按数据集 QC 汇总
+      filter_records.py              # 从标准表生成可复现训练子集
+      build_splits.py                # 从标准表生成固定 train/valid/test split
+    experiments/
+      run_many.py                    # 按 config 列表批量运行 train.py
+      collect_results.py             # 汇总 outputs/*/metrics.json
+    runs/
+      g00_qc_and_splits.sh           # 数据 QC、筛选、固定 split
+      g01_core_ablation.sh           # 抗体 only / concat antigen / cross-attention
+      g02_label_source_ablation.sh   # experimental / no_predicted / all label kinds
+      g03_pair_sampling_ablation.sh  # pair 采样强度与比例采样
+      g04_antigen_subset_ablation.sh # 抗原子集与去 AbRank 对照
     prepare/
       binding/
         prepare_all.sh
@@ -187,6 +200,21 @@ AffinityTransformer/
   configs/
     filters/
       cov2_rbd.yaml
+      g00_max_antigen_context.yaml
+      g02_experimental_only.yaml
+      g02_no_predicted.yaml
+      g04_cov2_rbd.yaml
+      g04_influenza_ha.yaml
+      g04_lysozyme.yaml
+      g04_no_abrank.yaml
+      g04_vegf.yaml
+    experiments/
+      g01_maxctx_antibody_only.yaml
+      g01_maxctx_concat_antigen.yaml
+      g01_maxctx_cross_attention.yaml
+      g02_*.yaml
+      g03_*.yaml
+      g04_*.yaml
     model_registry.yaml
     debug_toy.yaml
     baseline_antibody_only_ranknet.yaml
@@ -235,6 +263,9 @@ AffinityTransformer/
 11. `requirements.txt` 用于最小复现；远程服务器上的 CUDA 版 `torch` 可以按服务器环境单独安装，不要在通用依赖里写死某个 CUDA wheel。
 12. `predict.py` 是外部用户/比赛推理入口，负责读取用户输入表、选择模型、调用
     `user_entry.py`，并写出排序结果；它不负责训练、split 或数据集 prepare。
+13. `scripts/runs/gXX_*.sh` 是服务器运行入口。组号只表示实验组，不表示代码模块；
+    脚本必须调用 `scripts/data/`、`scripts/experiments/` 和 `train.py`，不得把核心
+    split、pair、metric 或模型逻辑写进 shell。
 
 ### 2.1 运行环境与依赖
 
@@ -723,11 +754,14 @@ filter:
 CLI：
 
 ```bash
-python scripts/filter_records.py \
+python scripts/data/filter_records.py \
   --input processed/binding/all_records.parquet \
   --filter-config configs/filters/cov2_rbd.yaml \
   --output processed/binding/filtered/cov2_rbd/all_records.parquet
 ```
+
+`scripts/filter_records.py` 仅作为兼容入口保留，新脚本应调用
+`scripts/data/filter_records.py`。
 
 输出：
 
@@ -810,6 +844,10 @@ group_holdout_split
 3. 每个 split 内只保留原始记录，不重新计算 label 或 group。
 4. valid/test 中可计算 Spearman 的 group 至少应有 2 条 `keep_for_training = True`
    且 `rank_label` 有效的记录；不足时不强行复制样本，但必须在 summary 中报告。
+5. 对长尾数据，单个 group 的记录数如果超过单个 holdout split 的目标记录数，
+   该 group 应优先固定在 train。其余 group 再按 group 数比例随机切入
+   train/valid/test，避免一个超大 group 被随机扔进 valid/test，也避免 train
+   只剩少数超大 group。
 
 `split_summary.csv` 至少包含：
 
@@ -985,12 +1023,19 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
 6. 每个 group 的 pair 数不得超过 `max_pairs_per_group`。
 7. `label_kind = "binary"` 的记录只允许正负样本之间配对。
 8. 同一对 record 默认只出现一次，不生成反向重复 pair。
+9. pair 采样策略由 `pair_sample_strategy` 控制：
+   `absolute_cap` 表示每个 group 最多取 `max_pairs_per_group` 个 pair；
+   `capped_proportional` 表示按 `ceil(candidate_pairs * pair_fraction)` 取样，
+   同时受 `min_pairs_per_group` 和 `max_pairs_per_group` 约束。
+   比例采样不得复制样本；候选 pair 少于目标数量时保留全部候选 pair。
 
 验收：
 
 1. 固定 seed 时 pair 结果可复现。
 2. 输出 pair 不跨 group。
 3. 空 group 或单一标签 group 不报错，但不产生 pair。
+4. `capped_proportional` 缺少 `pair_fraction` 或 `pair_fraction` 不在 `(0, 1]`
+   时必须抛 `ValueError`。
 
 **Group 构造规则**（`build_groups`，listwise 视图，与上面 Pair 构造规则共用第 1/3 条）
 

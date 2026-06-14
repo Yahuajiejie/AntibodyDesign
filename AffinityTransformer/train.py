@@ -146,7 +146,14 @@ def _build_train_loader(
     antigen_tokenizer: Tokenizer | None,
 ) -> tuple[pd.DataFrame, DataLoader]:
     records = filter_trainable_records(load_records(path))
-    pairs = build_pairs(records, config.data.max_pairs_per_group, config.data.seed)
+    pairs = build_pairs(
+        records,
+        max_pairs_per_group=config.data.max_pairs_per_group,
+        seed=config.data.seed,
+        pair_sample_strategy=config.data.pair_sample_strategy,
+        pair_fraction=config.data.pair_fraction,
+        min_pairs_per_group=config.data.min_pairs_per_group,
+    )
     if pairs.empty:
         raise ValueError(f"No trainable pairs could be built from {path}")
     dataset = PairwiseAffinityDataset(records, pairs)

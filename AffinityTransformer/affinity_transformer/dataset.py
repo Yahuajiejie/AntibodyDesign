@@ -305,6 +305,9 @@ def build_pairs(
     records: pd.DataFrame,
     max_pairs_per_group: int,
     seed: int,
+    pair_sample_strategy: str = "absolute_cap",
+    pair_fraction: float | None = None,
+    min_pairs_per_group: int = 1,
 ) -> pd.DataFrame:
     """Build pairwise ranking examples within each group.
 
@@ -313,6 +316,15 @@ def build_pairs(
             rank_label, label_kind, and keep_for_training.
         max_pairs_per_group: Maximum sampled pairs per group.
         seed: Random seed for reproducible sampling.
+        pair_sample_strategy: `"absolute_cap"` keeps the legacy behavior:
+            sample at most `max_pairs_per_group` pairs per group.
+            `"capped_proportional"` samples
+            `min(max_pairs_per_group, max(min_pairs_per_group,
+            ceil(n_candidate_pairs * pair_fraction)))`.
+        pair_fraction: Fraction of candidate pairs used only by
+            `"capped_proportional"`.
+        min_pairs_per_group: Lower target for `"capped_proportional"` before
+            applying the upper cap. Never creates more pairs than a group has.
 
     Returns:
         DataFrame with pair_id, group_id, record_id_i, record_id_j, label_i,
@@ -329,8 +341,7 @@ def build_pairs(
     missing = [c for c in required if c not in records.columns]
     if missing:
         raise ValueError(f"records is missing required column(s): {missing}")
-    if max_pairs_per_group < 1:
-        raise ValueError(f"max_pairs_per_group must be >= 1, got {max_pairs_per_group}")
+    _validate_pair_sampling(max_pairs_per_group, pair_sample_strategy, pair_fraction, min_pairs_per_group)
 
     # Rules 1 and 3: only keep_for_training=True records with a finite label.
     trainable = filter_trainable_records(records)
@@ -341,10 +352,17 @@ def build_pairs(
         if not candidates:
             continue
 
-        # Rule 6: cap pairs per group, sampled deterministically from `seed`.
-        if len(candidates) > max_pairs_per_group:
+        # Rule 6: cap/sample pairs per group, deterministically from `seed`.
+        n_sample = _pair_sample_count(
+            len(candidates),
+            max_pairs_per_group=max_pairs_per_group,
+            pair_sample_strategy=pair_sample_strategy,
+            pair_fraction=pair_fraction,
+            min_pairs_per_group=min_pairs_per_group,
+        )
+        if len(candidates) > n_sample:
             rng = random.Random(f"{seed}:{group_id}")
-            candidates = rng.sample(candidates, max_pairs_per_group)
+            candidates = rng.sample(candidates, n_sample)
             candidates.sort(key=lambda c: (c[0], c[1]))
 
         for record_id_i, record_id_j, label_i, label_j, y_ij in candidates:
@@ -363,6 +381,43 @@ def build_pairs(
     if not rows:
         return pd.DataFrame(columns=PAIR_COLUMNS)
     return pd.DataFrame(rows, columns=PAIR_COLUMNS)
+
+
+def _validate_pair_sampling(
+    max_pairs_per_group: int,
+    pair_sample_strategy: str,
+    pair_fraction: float | None,
+    min_pairs_per_group: int,
+) -> None:
+    if max_pairs_per_group < 1:
+        raise ValueError(f"max_pairs_per_group must be >= 1, got {max_pairs_per_group}")
+    if min_pairs_per_group < 1:
+        raise ValueError(f"min_pairs_per_group must be >= 1, got {min_pairs_per_group}")
+    if pair_sample_strategy not in {"absolute_cap", "capped_proportional"}:
+        raise ValueError(
+            "pair_sample_strategy must be 'absolute_cap' or 'capped_proportional', "
+            f"got {pair_sample_strategy!r}"
+        )
+    if pair_sample_strategy == "capped_proportional":
+        if pair_fraction is None or not (0.0 < pair_fraction <= 1.0):
+            raise ValueError(
+                "pair_fraction must be in (0, 1] when pair_sample_strategy='capped_proportional'"
+            )
+
+
+def _pair_sample_count(
+    n_candidates: int,
+    max_pairs_per_group: int,
+    pair_sample_strategy: str,
+    pair_fraction: float | None,
+    min_pairs_per_group: int,
+) -> int:
+    if pair_sample_strategy == "absolute_cap":
+        return min(n_candidates, max_pairs_per_group)
+
+    assert pair_fraction is not None
+    target = max(min_pairs_per_group, math.ceil(n_candidates * pair_fraction))
+    return min(n_candidates, max_pairs_per_group, target)
 
 
 # ── group construction (listwise analogue of build_pairs) ───────────────────

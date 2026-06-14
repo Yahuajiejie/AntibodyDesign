@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pandas as pd
+
 from affinity_transformer.splits import build_splits
 
 
@@ -44,6 +46,30 @@ def test_group_holdout_split_has_no_group_id_leakage(toy_records):
     assert (result.leakage_report["status"] == "PASS").all()
 
 
+def test_group_holdout_split_keeps_oversized_group_in_train_when_possible():
+    rows = []
+    for index in range(100):
+        rows.append(_split_row(f"big/{index}", "big_group", "study/big"))
+    for group_id in ["small_a", "small_b", "small_c"]:
+        for index in range(2):
+            rows.append(_split_row(f"{group_id}/{index}", group_id, f"study/{group_id}"))
+    records = pd.DataFrame(rows)
+
+    result = build_splits(
+        records,
+        strategy="group_holdout_split",
+        valid_fraction=0.1,
+        test_fraction=0.1,
+        seed=0,
+    )
+
+    assert "big_group" in set(result.train["group_id"])
+    assert "big_group" not in set(result.valid["group_id"])
+    assert "big_group" not in set(result.test["group_id"])
+    assert len(result.train) > len(result.valid)
+    assert len(result.train) > len(result.test)
+
+
 def test_split_summary_reports_all_splits(toy_records):
     result = build_splits(
         toy_records,
@@ -65,3 +91,15 @@ def test_build_splits_rejects_unknown_strategy(toy_records):
         assert "strategy" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
+
+
+def _split_row(record_id: str, group_id: str, dataset_id: str) -> dict[str, object]:
+    return {
+        "record_id": record_id,
+        "group_id": group_id,
+        "dataset_id": dataset_id,
+        "keep_for_training": True,
+        "rank_label": 1.0,
+        "label_kind": "experimental",
+        "antigen_source": "retrieved",
+    }
