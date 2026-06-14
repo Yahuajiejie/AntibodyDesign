@@ -1,0 +1,9 @@
+filter:
+  include_antigen_keys:
+    - CoV2_Wuhan_RBD
+    - CoV2_WT_RBD
+    - CoV2_RBD
+    - CoV2_RBD_representative
+  require_antigen_sequence: true
+  min_trainable_records_per_group: 2
+  min_unique_labels_per_group: 2

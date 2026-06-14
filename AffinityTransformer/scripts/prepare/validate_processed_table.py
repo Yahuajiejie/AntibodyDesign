@@ -56,7 +56,11 @@ def _validate(path: Path) -> list[str]:
         return errors  # can't proceed without schema
 
     n = len(df)
-    keep_mask = df["keep_for_training"].astype(bool)
+    try:
+        keep_mask = df["keep_for_training"].apply(_parse_bool)
+    except ValueError as exc:
+        errors.append(str(exc))
+        keep_mask = pd.Series(False, index=df.index)
     keep = df[keep_mask]
 
     # 2. record_id: non-null, unique
@@ -132,6 +136,22 @@ def _validate(path: Path) -> list[str]:
         print(f"  rows={n}  keep={n_keep}  drop={n_drop}")
 
     return errors
+
+
+def _parse_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, float) and value in (0.0, 1.0):
+        return bool(int(value))
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "f", "0", "no", "n"}:
+            return False
+    raise ValueError(f"Invalid boolean value for keep_for_training: {value!r}")
 
 
 def main() -> None:

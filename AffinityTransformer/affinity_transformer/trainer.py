@@ -166,6 +166,7 @@ class Trainer:
         self.early_stopping_metric = early_stopping_metric
 
         self.global_step = 0
+        self.history: list[dict[str, float]] = []
 
     def fit(self) -> None:
         """Run the full training loop (spec §5.7 rules 3 and 6).
@@ -211,6 +212,7 @@ class Trainer:
                 valid_metrics = self.evaluate(self.valid_dataloader)
                 summary.update(valid_metrics)
 
+            self.history.append(summary)
             _logger.info("epoch %d: %s", epoch, summary)
 
             if self.early_stopping_patience is not None and self.valid_dataloader is not None:
@@ -428,7 +430,10 @@ class Trainer:
             FileNotFoundError: If `path` does not exist (propagated from
                 `torch.load`).
         """
-        checkpoint = torch.load(path, map_location=map_location or self.device)
+        try:
+            checkpoint = torch.load(path, map_location=map_location or self.device, weights_only=False)
+        except TypeError:
+            checkpoint = torch.load(path, map_location=map_location or self.device)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.global_step = int(checkpoint["global_step"])
         return checkpoint
