@@ -12,4 +12,4 @@
 set -euo pipefail
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
-LOAD_CUDA=1 bash scripts/slurm/setup_affitest_env.sh
+LOAD_CUDA=0 bash scripts/slurm/setup_affitest_env.sh

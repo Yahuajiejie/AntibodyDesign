@@ -66,15 +66,22 @@ The default environment name is `affitest`. Override it only if needed:
 AFFINITY_CONDA_ENV=affitest bash scripts/slurm/setup_affitest_env.sh
 ```
 
-The setup script loads:
+The setup script only loads:
 
 ```text
 anaconda/3-2023.09-0
-cuda/11.8
 ```
 
-and installs `torch` from the CUDA 11.8 PyTorch wheel index, then installs
+It installs `torch` from the CUDA 11.8 PyTorch wheel index, then installs
 `requirements.txt`. It does not run tests on the login node.
+
+The shared Anaconda installation is read-only. The script keeps conda's
+writable package/env cache in the normal user location:
+
+```text
+$HOME/.conda/envs
+$HOME/.conda/pkgs
+```
 
 The setup and training scripts support these overrides:
 
@@ -86,6 +93,8 @@ MODULE_INIT              default: /gpfs/share/software/module/tools/modules/init
 CONDA_INIT               default: /gpfs/share/software/anaconda/3-2023.09-0/etc/profile.d/conda.sh
 HF_HOME                  default: <project>/cache/huggingface
 TORCH_HOME               default: <project>/cache/torch
+CONDA_ENVS_PATH          default: $HOME/.conda/envs
+CONDA_PKGS_DIRS          default: $HOME/.conda/pkgs
 ```
 
 ## 2. Validate the environment on a compute node

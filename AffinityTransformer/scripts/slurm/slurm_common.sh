@@ -15,14 +15,8 @@ affinity_resolve_project_dir() {
     PROJECT_DIR="${submit_dir}/AffinityTransformer"
   else
     echo "[FATAL] Cannot locate AffinityTransformer project root." >&2
-    echo "        Submit from the project root, or set:" >&2
-    echo "        AFFINITY_PROJECT_DIR=/path/to/AffinityTransformer sbatch ..." >&2
+    echo "        Submit from the project root, or set AFFINITY_PROJECT_DIR=/path/to/AffinityTransformer." >&2
     echo "        SLURM_SUBMIT_DIR=${submit_dir}" >&2
-    exit 2
-  fi
-
-  if [[ ! -d "${PROJECT_DIR}" ]]; then
-    echo "[FATAL] Project directory does not exist: ${PROJECT_DIR}" >&2
     exit 2
   fi
 
@@ -31,12 +25,20 @@ affinity_resolve_project_dir() {
   export PROJECT_DIR
 }
 
+affinity_configure_user_conda_dirs() {
+  # Shared Anaconda is read-only for normal users. Keep conda's writable
+  # package/env cache in the normal user location unless overridden.
+  mkdir -p "${HOME}/.conda/pkgs" "${HOME}/.conda/envs"
+  export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-${HOME}/.conda/pkgs}"
+  export CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-${HOME}/.conda/envs}"
+}
+
 affinity_load_modules() {
   MODULE_INIT="${MODULE_INIT:-/gpfs/share/software/module/tools/modules/init/profile.sh}"
   CONDA_INIT="${CONDA_INIT:-/gpfs/share/software/anaconda/3-2023.09-0/etc/profile.d/conda.sh}"
   ANACONDA_MODULE="${ANACONDA_MODULE:-anaconda/3-2023.09-0}"
   CUDA_MODULE="${CUDA_MODULE:-cuda/11.8}"
-  LOAD_CUDA="${LOAD_CUDA:-1}"
+  LOAD_CUDA="${LOAD_CUDA:-0}"
 
   if [[ ! -f "${MODULE_INIT}" ]]; then
     echo "[FATAL] Missing module init script: ${MODULE_INIT}" >&2
@@ -59,6 +61,7 @@ affinity_load_modules() {
     echo "[FATAL] Missing conda init script: ${CONDA_INIT}" >&2
     exit 5
   fi
+  affinity_configure_user_conda_dirs
   source "${CONDA_INIT}"
   if ! command -v conda >/dev/null 2>&1; then
     echo "[FATAL] conda command is unavailable after sourcing ${CONDA_INIT}" >&2
@@ -67,38 +70,37 @@ affinity_load_modules() {
 }
 
 affinity_activate_conda() {
-  ENV_NAME="${AFFINITY_CONDA_ENV:-affitest}"
-  if ! conda env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
-    echo "[FATAL] Conda env not found: ${ENV_NAME}" >&2
+  local env_name="${AFFINITY_CONDA_ENV:-affitest}"
+  if ! conda env list | awk '{print $1}' | grep -qx "${env_name}"; then
+    echo "[FATAL] Conda env not found: ${env_name}" >&2
     echo "        Create it first with scripts/slurm/setup_affitest_env.sh or setup_affitest_env.sbatch." >&2
     exit 7
   fi
 
-  conda activate "${ENV_NAME}"
-  echo "[env] python=$(command -v python)"
-  echo "[env] CONDA_PREFIX=${CONDA_PREFIX}"
-
+  conda activate "${env_name}"
   export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
   export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
   export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
   export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
   export HF_HOME="${HF_HOME:-${PROJECT_DIR}/cache/huggingface}"
-  export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-${HF_HOME}/transformers}"
   export TORCH_HOME="${TORCH_HOME:-${PROJECT_DIR}/cache/torch}"
-  mkdir -p "${HF_HOME}" "${TRANSFORMERS_CACHE}" "${TORCH_HOME}"
+  mkdir -p "${HF_HOME}" "${TORCH_HOME}"
 }
 
 affinity_print_header() {
   echo "========================================"
-  echo "Job ID:      ${SLURM_JOB_ID:-manual}"
-  echo "NodeList:    ${SLURM_NODELIST:-local}"
-  echo "Host:        $(hostname)"
-  echo "Start:       $(date)"
-  echo "Project:     ${PROJECT_DIR:-$(pwd)}"
-  echo "Conda env:   ${AFFINITY_CONDA_ENV:-affitest}"
-  echo "CUDA module: ${CUDA_MODULE:-cuda/11.8}"
-  echo "Partition:   ${SLURM_JOB_PARTITION:-local}"
-  echo "GPUs:        ${SLURM_GPUS:-${CUDA_VISIBLE_DEVICES:-none}}"
+  echo "Job ID:          ${SLURM_JOB_ID:-manual}"
+  echo "NodeList:        ${SLURM_NODELIST:-local}"
+  echo "Host:            $(hostname)"
+  echo "Start:           $(date)"
+  echo "Project:         ${PROJECT_DIR:-$(pwd)}"
+  echo "Conda env:       ${AFFINITY_CONDA_ENV:-affitest}"
+  echo "CUDA module:     ${CUDA_MODULE:-cuda/11.8}"
+  echo "Partition:       ${SLURM_JOB_PARTITION:-local}"
+  echo "Python:          $(command -v python)"
+  echo "CONDA_PREFIX:    ${CONDA_PREFIX:-}"
+  echo "CONDA_PKGS_DIRS: ${CONDA_PKGS_DIRS:-}"
+  echo "CONDA_ENVS_PATH: ${CONDA_ENVS_PATH:-}"
   echo "========================================"
 }
 
@@ -108,33 +110,14 @@ affinity_check_gpu_runtime() {
   fi
 
   python - <<'PY'
-import importlib.util
-import sys
-
-required = ["torch", "transformers", "pandas", "pyarrow", "yaml", "scipy"]
-missing = [name for name in required if importlib.util.find_spec(name) is None]
-if missing:
-    raise SystemExit(f"Missing Python package(s): {missing}")
-
 import torch
-import transformers
-import pandas
-import pyarrow
-import scipy
-import yaml
 
-print(f"Python:       {sys.version.split()[0]}")
-print(f"PyTorch:      {torch.__version__}")
-print(f"CUDA version: {torch.version.cuda}")
-print(f"Transformers: {transformers.__version__}")
-print(f"pandas:       {pandas.__version__}")
-print(f"pyarrow:      {pyarrow.__version__}")
-print(f"SciPy:        {scipy.__version__}")
-print(f"PyYAML:       {yaml.__version__}")
-print(f"CUDA ready:   {torch.cuda.is_available()}")
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("cuda version:", torch.version.cuda)
 if not torch.cuda.is_available():
-    raise SystemExit("torch.cuda.is_available() is False; check Slurm GPU allocation and torch CUDA build.")
-print(f"GPU:          {torch.cuda.get_device_name(0)}")
+    raise SystemExit("torch.cuda.is_available() is False")
+print("gpu:", torch.cuda.get_device_name(0))
 PY
 }
 
