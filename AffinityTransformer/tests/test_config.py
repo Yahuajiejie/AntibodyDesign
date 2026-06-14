@@ -142,6 +142,32 @@ def test_load_config_does_not_apply_hidden_seed_default(tmp_path, existing_train
 
     assert config.data.seed == 12345
 
+
+def test_load_config_parses_record_filter(tmp_path, existing_train_path):
+    overrides = {
+        "data": {
+            "train_path": str(existing_train_path),
+            "valid_path": None,
+            "max_pairs_per_group": 50,
+            "seed": 0,
+            "filter": {
+                "include_dataset_ids": ["studyA/tableA"],
+                "include_antigen_keys": ["agA"],
+                "require_antigen_sequence": True,
+                "min_unique_labels_per_group": 2,
+            },
+        }
+    }
+    config_path = _write_config(tmp_path, overrides, train_path=existing_train_path)
+
+    config = load_config(config_path)
+
+    assert config.data.record_filter.include_dataset_ids == ("studyA/tableA",)
+    assert config.data.record_filter.include_antigen_keys == ("agA",)
+    assert config.data.record_filter.require_antigen_sequence is True
+    assert config.data.record_filter.min_unique_labels_per_group == 2
+
+
 def test_load_config_not_a_mapping(tmp_path):
     config_path = tmp_path / "invalid_format.yaml"
     config_path.write_text(yaml.safe_dump(["not", "a", "dict"])) # 写入一个列表

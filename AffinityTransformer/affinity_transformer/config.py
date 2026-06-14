@@ -14,11 +14,13 @@ default.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .record_filter import RecordFilterConfig, build_record_filter_config
 
 
 @dataclass
@@ -48,6 +50,8 @@ class DataConfig:
             per `group_id` (see `build_pairs`).
         seed: Random seed used for pair sampling and any other randomness
             in the data pipeline.
+        record_filter: Optional selector applied to `all_records_path` before
+            automatic splitting. Ignored when `split_strategy == "none"`.
     """
 
     train_path: Path | None
@@ -60,6 +64,7 @@ class DataConfig:
     split_dir: Path | None = None
     valid_fraction: float = 0.1
     test_fraction: float = 0.1
+    record_filter: RecordFilterConfig = field(default_factory=RecordFilterConfig)
 
 
 @dataclass
@@ -308,6 +313,7 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
         split_dir=split_dir,
         valid_fraction=valid_fraction,
         test_fraction=test_fraction,
+        record_filter=build_record_filter_config(section.get("filter")),
     )
 
 

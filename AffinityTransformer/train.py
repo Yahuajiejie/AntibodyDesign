@@ -25,6 +25,7 @@ from affinity_transformer.dataset import (
     load_records,
 )
 from affinity_transformer.metrics import compute_group_spearman, summarize_group_spearman
+from affinity_transformer.record_filter import filter_records, write_filter_outputs
 from affinity_transformer.splits import build_splits, write_splits
 from affinity_transformer.trainer import Trainer, build_model_and_tokenizers
 from affinity_transformer.utils import ensure_dir
@@ -111,6 +112,18 @@ def _resolve_data_paths(config: Config) -> tuple[Path, Path | None, Path | None]
     if config.data.all_records_path is None or config.data.split_dir is None:
         raise ValueError("automatic split mode requires all_records_path and split_dir")
     records = load_records(config.data.all_records_path)
+    if not config.data.record_filter.is_empty():
+        filtered = filter_records(records, config.data.record_filter)
+        if filtered.empty:
+            raise ValueError("data.filter produced an empty records table")
+        write_filter_outputs(
+            records,
+            filtered,
+            config.data.record_filter,
+            config.data.split_dir / "filtered_records.parquet",
+            config.data.split_dir / "filter_summary.csv",
+        )
+        records = filtered
     split = build_splits(
         records,
         strategy=config.data.split_strategy,
