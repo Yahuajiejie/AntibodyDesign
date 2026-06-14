@@ -93,8 +93,8 @@ MODULE_INIT              default: /gpfs/share/software/module/tools/modules/init
 CONDA_INIT               default: /gpfs/share/software/anaconda/3-2023.09-0/etc/profile.d/conda.sh
 HF_HOME                  default: <project>/cache/huggingface
 TORCH_HOME               default: <project>/cache/torch
-CONDA_ENVS_PATH          default: $HOME/.conda/envs
-CONDA_PKGS_DIRS          default: $HOME/.conda/pkgs
+AFFINITY_CONDA_ENVS_PATH default: $HOME/.conda/envs
+AFFINITY_CONDA_PKGS_DIRS default: $HOME/.conda/pkgs
 ```
 
 ## 2. Validate the environment on a compute node

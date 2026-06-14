@@ -27,10 +27,15 @@ affinity_resolve_project_dir() {
 
 affinity_configure_user_conda_dirs() {
   # Shared Anaconda is read-only for normal users. Keep conda's writable
-  # package/env cache in the normal user location unless overridden.
-  mkdir -p "${HOME}/.conda/pkgs" "${HOME}/.conda/envs"
-  export CONDA_PKGS_DIRS="${CONDA_PKGS_DIRS:-${HOME}/.conda/pkgs}"
-  export CONDA_ENVS_PATH="${CONDA_ENVS_PATH:-${HOME}/.conda/envs}"
+  # package/env cache in the normal user location. Some clusters export
+  # CONDA_* paths pointing back into the read-only shared installation, so do
+  # not inherit them by default.
+  local pkgs_dir="${AFFINITY_CONDA_PKGS_DIRS:-${HOME}/.conda/pkgs}"
+  local envs_dir="${AFFINITY_CONDA_ENVS_PATH:-${HOME}/.conda/envs}"
+
+  mkdir -p "${pkgs_dir}" "${envs_dir}"
+  export CONDA_PKGS_DIRS="${pkgs_dir}"
+  export CONDA_ENVS_PATH="${envs_dir}"
 }
 
 affinity_load_modules() {
