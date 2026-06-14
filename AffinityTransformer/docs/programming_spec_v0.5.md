@@ -120,6 +120,7 @@ AffinityTransformer/
     expression/
     ...
   scripts/
+    filter_records.py                # 从标准表生成可复现训练子集
     prepare/
       binding/
         prepare_all.sh
@@ -152,6 +153,14 @@ AffinityTransformer/
       all_records.parquet
       all_records_summary.csv
       splits/
+        cov2_rbd_group_holdout/
+          filtered_records.parquet
+          filter_summary.csv
+          train.parquet
+          valid.parquet
+          test.parquet
+          split_summary.csv
+          leakage_report.csv
         debug_record_split/
           train.parquet
           valid.parquet
@@ -176,15 +185,19 @@ AffinityTransformer/
           dropped_records.csv
        	...
   configs/
+    filters/
+      cov2_rbd.yaml
     model_registry.yaml
     debug_toy.yaml
     baseline_antibody_only_ranknet.yaml
     baseline_group_holdout_ranknet.yaml
     ablation_concat_antigen_ranknet.yaml
     ablation_cross_attention_ranknet.yaml
+    cross_attention_cov2_rbd_ranknet.yaml
   affinity_transformer/
     __init__.py
     config.py
+    record_filter.py
     splits.py
     dataset.py
     dataloader.py
@@ -517,6 +530,7 @@ class DataConfig:
     test_fraction: float
     max_pairs_per_group: int
     seed: int
+    record_filter: RecordFilterConfig  # YAML 字段名为 data.filter
 
 @dataclass
 class ModelConfig:
@@ -561,6 +575,19 @@ def load_config(path: Path) -> Config:
 `valid_fraction` 和 `test_fraction` 只在自动 split 模式下生效。`test_path` 只用于
 训练结束后的最终评估，不参与 early stopping，不用于选择 checkpoint。
 
+`filter` 为可选字段，只在自动 split 模式下生效。它先作用于
+`all_records_path`，再进入 `splits.py`。如果启用了非空筛选条件，`train.py`
+必须在 `split_dir` 写出：
+
+```text
+filtered_records.parquet
+filter_summary.csv
+```
+
+显式 split 模式下，调用方已经直接指定 `train_path`/`valid_path`/`test_path`，
+因此不再自动应用 `filter`；需要子集实验时应先用 `scripts/filter_records.py`
+生成子集文件，再以 `split_strategy = "none"` 复现实验。
+
 验收：
 
 1. 缺少必要字段时抛出 `ValueError`。
@@ -569,8 +596,167 @@ def load_config(path: Path) -> Config:
 4. `split_strategy = "none"` 时，`train_path` 必须存在。
 5. `split_strategy != "none"` 时，`all_records_path` 必须存在，`split_dir` 可以不存在但必须可创建。
 6. `valid_fraction + test_fraction` 必须大于 0 且小于 1。
+7. `filter` 字段未知或类型错误时抛出 `ValueError`，不得静默忽略。
 
-### 5.1.1 `splits.py`
+### 5.1.1 `record_filter.py`
+
+负责从标准 processed table 中选择训练子集。它只消费 `all_records.parquet`
+或已切好的标准表，不读取原始 CSV，不改写 label，不重新生成 `group_id`。
+
+典型用途：
+
+1. 指定一个或几个数据集作为训练集。
+2. 指定单抗原或一组抗原训练。
+3. 指定单抗体或一组抗体训练。
+4. 指定抗原-抗体 pair 训练。
+5. 做抗原来源、label_kind、抗体类型等消融实验。
+
+建议对象：
+
+```python
+@dataclass
+class AntigenAntibodyPair:
+    antigen_key: str
+    antibody_id: str
+
+@dataclass
+class RecordFilterConfig:
+    include_dataset_ids: tuple[str, ...]
+    exclude_dataset_ids: tuple[str, ...]
+    include_study_ids: tuple[str, ...]
+    exclude_study_ids: tuple[str, ...]
+    include_table_ids: tuple[str, ...]
+    exclude_table_ids: tuple[str, ...]
+    include_antigen_keys: tuple[str, ...]
+    exclude_antigen_keys: tuple[str, ...]
+    include_antibody_ids: tuple[str, ...]
+    exclude_antibody_ids: tuple[str, ...]
+    include_antibody_sequence_hashes: tuple[str, ...]
+    exclude_antibody_sequence_hashes: tuple[str, ...]
+    include_group_ids: tuple[str, ...]
+    exclude_group_ids: tuple[str, ...]
+    include_record_ids: tuple[str, ...]
+    exclude_record_ids: tuple[str, ...]
+    include_label_kinds: tuple[str, ...]
+    exclude_label_kinds: tuple[str, ...]
+    include_antibody_types: tuple[str, ...]
+    exclude_antibody_types: tuple[str, ...]
+    include_antigen_sources: tuple[str, ...]
+    exclude_antigen_sources: tuple[str, ...]
+    include_antigen_antibody_pairs: tuple[AntigenAntibodyPair, ...]
+    require_antigen_sequence: bool
+    require_antibody_id: bool
+    min_records_per_group: int | None
+    min_trainable_records_per_group: int | None
+    min_unique_labels_per_group: int | None
+```
+
+核心函数：
+
+```python
+def filter_records(records: pd.DataFrame, config: RecordFilterConfig) -> pd.DataFrame:
+    ...
+
+def antibody_sequence_hashes(records: pd.DataFrame) -> pd.Series:
+    ...
+
+def write_filter_outputs(
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    config: RecordFilterConfig,
+    output_path: Path,
+    summary_path: Path,
+) -> None:
+    ...
+```
+
+筛选语义：
+
+1. 同一个 `include_*` 字段内多个值是 OR。
+2. 不同 `include_*` 字段之间是 AND。
+3. `exclude_*` 在 include 之后执行，命中即排除。
+4. `include_antigen_antibody_pairs` 表示 `(antigen_key, antibody_id)` 精确匹配；
+   如果某些数据集没有 `antibody_id`，应使用 `include_record_ids` 或
+   `include_antibody_sequence_hashes`。
+5. `include_antibody_sequence_hashes` 使用
+   `heavy_chain + "|" + light_chain + "|" + single_chain_sequence` 的稳定 hash，
+   用于解决不同数据集没有统一 `antibody_id` 的情况。
+6. `min_records_per_group`、`min_trainable_records_per_group` 和
+   `min_unique_labels_per_group` 在记录级筛选之后执行。
+7. 筛选结果必须保留原始 schema 和原始 `record_id`，不得重新编号。
+
+示例：单抗原/一组抗原训练。
+
+```yaml
+data:
+  all_records_path: processed/binding/all_records.parquet
+  split_strategy: group_holdout_split
+  split_dir: processed/binding/splits/cov2_rbd_group_holdout
+  filter:
+    include_antigen_keys:
+      - CoV2_Wuhan_RBD
+      - CoV2_WT_RBD
+      - CoV2_RBD_representative
+    require_antigen_sequence: true
+    min_trainable_records_per_group: 2
+    min_unique_labels_per_group: 2
+```
+
+示例：指定若干数据集训练。
+
+```yaml
+filter:
+  include_dataset_ids:
+    - phillips2021binding/cr9114_h1_kd
+    - phillips2021binding/cr9114_h3_kd
+```
+
+示例：指定抗原-抗体 pair。
+
+```yaml
+filter:
+  include_antigen_antibody_pairs:
+    - antigen_key: VEGF_A
+      antibody_id: G6
+```
+
+CLI：
+
+```bash
+python scripts/filter_records.py \
+  --input processed/binding/all_records.parquet \
+  --filter-config configs/filters/cov2_rbd.yaml \
+  --output processed/binding/filtered/cov2_rbd/all_records.parquet
+```
+
+输出：
+
+```text
+filtered_records.parquet 或用户指定的 output
+filter_summary.csv
+```
+
+`filter_summary.csv` 至少包含：
+
+```text
+stage
+n_records
+n_trainable_records
+n_groups
+n_dataset_ids
+label_kind_counts
+antigen_source_counts
+filter_active
+```
+
+禁止：
+
+1. 禁止在 `record_filter.py` 中读取原始 CSV。
+2. 禁止在筛选阶段修改 `rank_label`、`group_id` 或 `antigen_sequence`。
+3. 禁止筛选失败时静默回退到全量数据。
+4. 禁止把筛选逻辑散落到 `train.py`、`trainer.py` 或 notebook 中。
+
+### 5.1.2 `splits.py`
 
 负责从 `all_records.parquet` 生成训练/验证/测试集，并输出泄露检查报告。它只消费
 标准表，不读取原始 CSV，也不负责训练。
@@ -1210,13 +1396,15 @@ python train.py --config configs/baseline_antibody_only_ranknet.yaml
 职责：
 
 1. 调用 `load_config` 读取 YAML。
-2. 若配置为自动 split 模式，读取 `all_records.parquet` 并调用 `splits.py` 生成
+2. 若配置为自动 split 模式，读取 `all_records.parquet`；如果 `data.filter`
+   非空，先调用 `record_filter.py` 生成训练子集和 `filter_summary.csv`。
+3. 调用 `splits.py` 生成
    train/valid/test 文件。
-3. 读取 train/valid/test 标准表，调用 `dataset.py` 构造 records、pairs 和 metadata。
-4. 构造 tokenizer、encoder 和 `AffinityRanker`。
-5. 构造 dataloader 和 `Trainer`。
-6. 调用 `Trainer.fit()`，再对 valid/test 输出 metrics 和 predictions。
-7. 保存 `config.yaml`、`metrics.json`、`group_metrics.csv`、`predictions.csv`、
+4. 读取 train/valid/test 标准表，调用 `dataset.py` 构造 records、pairs 和 metadata。
+5. 构造 tokenizer、encoder 和 `AffinityRanker`。
+6. 构造 dataloader 和 `Trainer`。
+7. 调用 `Trainer.fit()`，再对 valid/test 输出 metrics 和 predictions。
+8. 保存 `config.yaml`、`metrics.json`、`group_metrics.csv`、`predictions.csv`、
    `checkpoint.pt` 和 `run.log`。
 
 禁止：
@@ -1232,6 +1420,8 @@ python train.py --config configs/baseline_antibody_only_ranknet.yaml
 2. 自动 split 模式会在 `split_dir` 写出三份 parquet 和两张报告。
 3. 显式 split 模式不会重新切分数据。
 4. 输出目录中保存完整 config 和随机种子。
+5. 配置了 `data.filter` 时，split 前写出 `filtered_records.parquet` 和
+   `filter_summary.csv`，且后续 split 只基于过滤后的 records。
 
 ### 5.8 `user_entry.py`
 
@@ -1555,6 +1745,10 @@ build_pairs is reproducible with fixed seed
 build_groups never crosses group_id
 build_groups skips single-label groups
 build_groups is reproducible with fixed seed
+record_filter supports dataset/antigen/antibody/group/record include-exclude filters
+record_filter supports antigen-antibody pair filters
+record_filter supports antibody sequence hash filters
+record_filter applies group-level minimum record/label thresholds
 build_splits debug_record_split has no record_id leakage
 build_splits group_holdout_split has no group_id leakage
 build_splits writes split_summary and leakage_report
@@ -1573,6 +1767,7 @@ predict.py reads input.csv and writes rankings.csv with required columns
 model.forward handles missing antigen without NaN
 model.forward + loss supports backward without NaN gradients
 train.py debug config completes one epoch on toy data
+train.py automatic split applies data.filter before writing split files
 ```
 
 ### 7.3 最小集成测试

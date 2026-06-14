@@ -1,0 +1,31 @@
+data:
+  all_records_path: processed/binding/all_records.parquet
+  train_path: null
+  valid_path: null
+  test_path: null
+  split_strategy: group_holdout_split
+  split_dir: processed/binding/splits/cov2_rbd_group_holdout
+  valid_fraction: 0.1
+  test_fraction: 0.1
+  max_pairs_per_group: 50
+  seed: 0
+  filter:
+    include_antigen_keys:
+      - CoV2_Wuhan_RBD
+      - CoV2_WT_RBD
+      - CoV2_RBD_representative
+    require_antigen_sequence: true
+    min_trainable_records_per_group: 2
+    min_unique_labels_per_group: 2
+
+model:
+  antibody_encoder: esm2_t12_35M
+  antigen_encoder: esm2_t12_35M
+  d_model: 480
+  use_cross_attention: true
+
+train:
+  batch_size: 16
+  lr: 1.0e-4
+  epochs: 10
+  device: cpu
