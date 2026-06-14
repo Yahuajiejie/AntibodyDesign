@@ -139,6 +139,31 @@ def test_build_pairs_respects_max_pairs_per_group(toy_records):
     assert (pairs["group_id"] == FV_GROUP).sum() == 2
 
 
+def test_build_pairs_supports_capped_proportional_sampling(toy_records):
+    pairs = build_pairs(
+        toy_records,
+        max_pairs_per_group=3,
+        seed=0,
+        pair_sample_strategy="capped_proportional",
+        pair_fraction=0.5,
+        min_pairs_per_group=1,
+    )
+
+    assert (pairs["group_id"] == FV_GROUP).sum() == 2  # ceil(3 candidate pairs * 0.5)
+    assert (pairs["group_id"] == BINARY_GROUP).sum() == 2  # ceil(4 candidate pairs * 0.5)
+
+
+def test_build_pairs_rejects_invalid_proportional_sampling(toy_records):
+    with pytest.raises(ValueError, match="pair_fraction"):
+        build_pairs(
+            toy_records,
+            max_pairs_per_group=3,
+            seed=0,
+            pair_sample_strategy="capped_proportional",
+            pair_fraction=None,
+        )
+
+
 def test_build_pairs_rejects_invalid_max_pairs_per_group(toy_records):
     # 不准乱设上限
     with pytest.raises(ValueError):

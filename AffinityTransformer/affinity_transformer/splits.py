@@ -133,9 +133,15 @@ def _split_by_group(
     test_fraction: float,
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    group_ids = sorted(records["group_id"].astype(str).unique().tolist())
-    train_groups, valid_groups, test_groups = _partition_units(
-        group_ids, valid_fraction, test_fraction, seed
+    group_sizes = (
+        records.assign(_group_id_str=records["group_id"].astype(str))
+        .groupby("_group_id_str", sort=True)
+        .size()
+        .astype(int)
+        .to_dict()
+    )
+    train_groups, valid_groups, test_groups = _partition_weighted_units(
+        group_sizes, valid_fraction, test_fraction, seed
     )
     return (
         _rows_for_values(records, "group_id", train_groups),
@@ -194,6 +200,86 @@ def _fraction_count(n_units: int, fraction: float) -> int:
     if fraction <= 0:
         return 0
     return max(1, int(round(n_units * fraction)))
+
+
+def _partition_weighted_units(
+    weights: dict[str, int],
+    valid_fraction: float,
+    test_fraction: float,
+    seed: int,
+) -> tuple[set[str], set[str], set[str]]:
+    """Partition group ids while keeping over-target groups in train."""
+    if len(weights) < 3:
+        raise ValueError(
+            f"At least 3 split units are required to create train/valid/test, got {len(weights)}"
+        )
+    if any(weight < 1 for weight in weights.values()):
+        raise ValueError("split unit weights must be positive")
+
+    total_weight = sum(weights.values())
+    holdout_limit = _fraction_count(total_weight, max(valid_fraction, test_fraction))
+    pinned_train = {unit for unit, weight in weights.items() if weight > holdout_limit}
+    eligible = sorted(set(weights) - pinned_train)
+    if len(eligible) < 2:
+        return _partition_units(sorted(weights), valid_fraction, test_fraction, seed)
+
+    n_valid = _fraction_count(len(weights), valid_fraction)
+    n_test = _fraction_count(len(weights), test_fraction)
+    reserve_for_train = 0 if pinned_train else 1
+    while n_valid + n_test > len(eligible) - reserve_for_train:
+        if n_test >= n_valid and n_test > 1:
+            n_test -= 1
+        elif n_valid > 1:
+            n_valid -= 1
+        else:
+            break
+
+    if n_valid < 1 or n_test < 1 or n_valid + n_test > len(eligible):
+        return _partition_units(sorted(weights), valid_fraction, test_fraction, seed)
+
+    units = list(eligible)
+    rng = random.Random(seed)
+    rng.shuffle(units)
+    holdout_units = units[:n_test + n_valid]
+    test_units, valid_units = _split_holdout_by_weight(
+        holdout_units, weights, n_test=n_test, n_valid=n_valid
+    )
+    train_units = (set(units[n_test + n_valid:]) | pinned_train)
+
+    if not train_units or not valid_units or not test_units:
+        raise ValueError(
+            "Split fractions produced an empty train, valid, or test split; "
+            f"n_units={len(weights)}, n_valid={len(valid_units)}, n_test={len(test_units)}"
+        )
+    return train_units, valid_units, test_units
+
+
+def _split_holdout_by_weight(
+    holdout_units: list[str],
+    weights: dict[str, int],
+    n_test: int,
+    n_valid: int,
+) -> tuple[set[str], set[str]]:
+    test_units: set[str] = set()
+    valid_units: set[str] = set()
+    test_weight = 0
+    valid_weight = 0
+
+    for unit in sorted(holdout_units, key=lambda item: weights[item], reverse=True):
+        if len(test_units) >= n_test:
+            valid_units.add(unit)
+            valid_weight += weights[unit]
+        elif len(valid_units) >= n_valid:
+            test_units.add(unit)
+            test_weight += weights[unit]
+        elif test_weight <= valid_weight:
+            test_units.add(unit)
+            test_weight += weights[unit]
+        else:
+            valid_units.add(unit)
+            valid_weight += weights[unit]
+
+    return test_units, valid_units
 
 
 def _rows_for_values(records: pd.DataFrame, column: str, values: set[str]) -> pd.DataFrame:
