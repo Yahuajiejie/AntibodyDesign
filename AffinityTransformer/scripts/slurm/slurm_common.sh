@@ -90,6 +90,9 @@ affinity_activate_conda() {
   export HF_HOME="${HF_HOME:-${PROJECT_DIR}/cache/huggingface}"
   export TORCH_HOME="${TORCH_HOME:-${PROJECT_DIR}/cache/torch}"
   mkdir -p "${HF_HOME}" "${TORCH_HOME}"
+  # Compute nodes have no internet access; all models must be pre-downloaded on the login node.
+  export TRANSFORMERS_OFFLINE="${TRANSFORMERS_OFFLINE:-1}"
+  export HF_DATASETS_OFFLINE="${HF_DATASETS_OFFLINE:-1}"
 }
 
 affinity_print_header() {

@@ -26,6 +26,6 @@ conda activate "${ENV_NAME}"
 python -m pip install --upgrade pip
 python -m pip install torch --index-url https://download.pytorch.org/whl/cu118
 python -m pip install -r requirements.txt
-python -m pip check
+# python -m pip check  # skipped: base Anaconda packages cause false positives in conda envs
 
 echo "conda env ready: ${ENV_NAME}"

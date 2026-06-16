@@ -16,12 +16,15 @@ source scripts/slurm/activate_affitest.sh
 affinity_check_cpu_runtime
 
 python - <<'PY'
+# Models must be pre-downloaded on the login node before submitting this job.
+# Run scripts/slurm/download_esm2_login.sh on the login node first.
 from transformers import AutoModel, AutoTokenizer
 
 repos = ["facebook/esm2_t12_35M_UR50D"]
 for repo in repos:
-    print(f"downloading {repo}")
-    AutoTokenizer.from_pretrained(repo)
-    AutoModel.from_pretrained(repo)
+    print(f"loading {repo} from local cache")
+    AutoTokenizer.from_pretrained(repo, local_files_only=True)
+    AutoModel.from_pretrained(repo, local_files_only=True)
+    print(f"  ok: {repo}")
 print("ESM2 cache warmup complete")
 PY
