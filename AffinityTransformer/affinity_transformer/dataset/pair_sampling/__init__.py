@@ -1,4 +1,4 @@
-"""Private helpers behind ``model.dataset.pairs``."""
+"""Private helpers behind ``affinity_transformer.dataset.pairs``."""
 
 from .common import (
     _candidate_pair_count,

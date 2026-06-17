@@ -1,6 +1,6 @@
 # Dataset 调用链
 
-本文对应 spec v0.6 的 dataset / pair sampler 设计，解释 `model/dataset/` 的函数如何互相调用。
+本文对应 spec v0.6 的 dataset / pair sampler 设计，解释 `affinity_transformer/dataset/` 的函数如何互相调用。
 
 ## 1. 标准表进入
 
@@ -172,7 +172,7 @@ _sample_within_blocks
 
 1. 连续 label 还没有按经验分位难度桶做 easy/medium/hard/local 配额。
 2. `min_label_diff` 还不是根据 group 分布启发式估计。
-3. 这些改进已经适合放进 v0.7 sampler，而不是混进 v0.6 的拆分镜像里。
+3. 这些改进已经适合放进 v0.7 sampler，而不是混进 v0.6 的稳定实现里。
 
 ## 7. Listwise 数据构造
 
