@@ -1,3 +1,14 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Generated results and runtime artifacts
+cache/
+logs/
+outputs/
+processed/
+reports/
+runs/
+wandb/
+checkpoints/
+lightning_logs/

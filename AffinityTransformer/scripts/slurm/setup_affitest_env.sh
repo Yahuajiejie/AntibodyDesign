@@ -23,9 +23,22 @@ fi
 
 conda activate "${ENV_NAME}"
 
-python -m pip install --upgrade pip
-python -m pip install torch --index-url https://download.pytorch.org/whl/cu118
-python -m pip install -r requirements.txt
+# Install via conda (uses cluster's local mirror, no public internet needed)
+conda install -n "${ENV_NAME}" -y \
+  pandas pyarrow pyyaml scipy
+
+# pytorch with CUDA 11.8 — conda channel takes priority over pip
+conda install -n "${ENV_NAME}" -y \
+  pytorch torchvision torchaudio pytorch-cuda=11.8 \
+  -c pytorch -c nvidia || \
+  echo "[WARN] conda pytorch install failed, will try pip fallback below"
+
+# transformers not in standard conda channels, try pip (may need mirror)
+pip install transformers \
+  --no-deps \
+  --index-url https://pypi.tuna.tsinghua.edu.cn/simple || \
+  pip install transformers --no-deps
+
 # python -m pip check  # skipped: base Anaconda packages cause false positives in conda envs
 
 echo "conda env ready: ${ENV_NAME}"
