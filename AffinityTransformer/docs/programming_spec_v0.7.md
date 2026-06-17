@@ -1,6 +1,6 @@
 # AffinityTransformer 编程规范
 
-版本：v0.6  
+版本：v0.7  
 依据：新版 `README.md`  
 角色设定：本文件按项目组长给开发组员发任务的方式编写。它不是论文说明，也不是泛泛的 Python 风格指南；它规定哪些代码该写、函数输入输出是什么、怎么验收、哪些行为禁止。
 
@@ -60,6 +60,15 @@ group 大小与 label 连续性诊断，再按 `rank_label` 排序切成等频 b
 采样跨 block pair 和同 block pair。跨 block pair 提供强排序监督，同 block pair
 保留局部细粒度分辨能力。v0.6 不引入全局 `min_label_gap`，也不对 label 做正态化；
 任何 label-gap 或 quantile-gap 过滤都必须作为后续显式消融，而不是救火补丁。
+
+v0.7 变更：新增"采样器对照"规范。v0.6 的 memory-safe block sampler 必须保留，
+作为默认稳态采样器；v0.7 在其下方新增 `quantile_difficulty` 采样器，用于比较
+更科学的 pair 采样策略。新版采样器以 group 内经验分位数为核心，不假设 label
+服从正态、均匀或任何参数分布；它先估计经验分位数 `q`，再按 `quantile_gap`
+进入 easy/medium/hard/local 难度桶，并用少量随机 probe pair 估计该 group 自身的
+raw label gap 下限。v0.7 的重点不是替换主实验默认采样器，而是让 g03 能比较
+`block_quantile` 与 `quantile_difficulty` 在 pair 分布、运行时间、峰值内存和模型指标
+上的差异。
 
 ## 0. 总体判断
 
@@ -124,6 +133,7 @@ AffinityTransformer/
     programming_spec_v0.4.md
     programming_spec_v0.5.md
     programming_spec_v0.6.md
+    programming_spec_v0.7.md
   data/
     binding/
     expression/
@@ -223,6 +233,9 @@ AffinityTransformer/
       g01_maxctx_cross_attention.yaml
       g02_*.yaml
       g03_*.yaml
+      g03_block_quantile_abs200.yaml
+      g03_quantile_difficulty_abs200.yaml
+      g03_quantile_difficulty_quota.yaml
       g04_*.yaml
     model_registry.yaml
     debug_toy.yaml
@@ -569,6 +582,7 @@ class DataConfig:
     valid_fraction: float
     test_fraction: float
     max_pairs_per_group: int
+    pair_sampler: "block_quantile" | "quantile_difficulty"
     pair_sample_strategy: "absolute_cap" | "capped_proportional"
     pair_fraction: float | None
     min_pairs_per_group: int
@@ -578,6 +592,13 @@ class DataConfig:
     intra_block_pairs_per_large_group: int = 50
     discrete_label_unique_threshold: int = 32
     discrete_label_ratio_threshold: float = 0.05
+    difficulty_bucket_quotas: dict[str, float] | None = None
+    difficulty_bucket_edges: dict[str, tuple[float, float]] | None = None
+    gap_probe_pairs_per_group: int = 10000
+    raw_gap_min_quantile: float = 0.05
+    min_quantile_gap: float = 0.0
+    label_kind_pair_quotas: dict[str, float] | None = None
+    dataset_pair_quotas: dict[str, float] | None = None
     seed: int
     record_filter: RecordFilterConfig  # YAML 字段名为 data.filter
 
@@ -983,6 +1004,7 @@ def build_pairs(
     records: pd.DataFrame,
     max_pairs_per_group: int,
     seed: int,
+    pair_sampler: str = "block_quantile",
     pair_sample_strategy: str = "absolute_cap",
     pair_fraction: float | None = None,
     min_pairs_per_group: int = 1,
@@ -992,6 +1014,13 @@ def build_pairs(
     intra_block_pairs_per_large_group: int = 50,
     discrete_label_unique_threshold: int = 32,
     discrete_label_ratio_threshold: float = 0.05,
+    difficulty_bucket_quotas: dict[str, float] | None = None,
+    difficulty_bucket_edges: dict[str, tuple[float, float]] | None = None,
+    gap_probe_pairs_per_group: int = 10000,
+    raw_gap_min_quantile: float = 0.05,
+    min_quantile_gap: float = 0.0,
+    label_kind_pair_quotas: dict[str, float] | None = None,
+    dataset_pair_quotas: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     ...
 
@@ -1061,7 +1090,22 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
 11. 对大 group，禁止构造完整候选 pair 列表。大 group 必须走分块采样，内存复杂度
     不得随 `candidate_pairs` 二次增长。
 
-**大 group 分块采样规则**
+**采样器选择**
+
+`pair_sampler` 控制采样器实现：
+
+1. `block_quantile`：v0.6 默认采样器。小 group 可以精确枚举，大 group 走
+   rank-label 等频分块，采样跨 block pair 和少量同 block pair。
+2. `quantile_difficulty`：v0.7 对照采样器。所有大 group 都基于经验分位数、
+   难度桶、raw gap probe 和可选 quota 采样。该采样器暂不替换默认主实验，先用于
+   g03 采样器消融和性能比较。
+3. 未知 `pair_sampler` 必须抛 `ValueError`，不得静默退化为默认采样器。
+
+实现时不要删除或重写 `block_quantile`。`quantile_difficulty` 的 helper 函数应放在
+现有大 group block sampler 下方，入口由 `pair_sampler` 分发，便于同一份数据、同一
+seed 下做 A/B 对照和性能 profiling。
+
+**`block_quantile` 大 group 分块采样规则**
 
 该规则只改变采样实现，不改变 pair 的科学语义：仍然只比较同一 `group_id` 内
 `rank_label` 不相等的记录。
@@ -1093,6 +1137,85 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
 9. 大 group 分块采样的目标不是重塑 label 分布，而是在不枚举 `O(n^2)` pairs 的前提下，
    同时获得强排序监督（跨 block）和局部排序监督（同 block）。
 
+**`quantile_difficulty` 采样器规则**
+
+该采样器用于研究"更科学 pair 采样"是否优于 `block_quantile`。它不假设 label
+服从正态、均匀或任何参数分布，只使用 group 内经验排序和少量随机 probe。
+
+算法步骤：
+
+1. 对每个 `group_id` 先调用 `filter_trainable_records`，只保留
+   `keep_for_training = True` 且 `rank_label` 有限的记录。
+2. 在 group 内按 `(rank_label, record_id)` 升序排序，计算经验分位数 `q`：
+   `q = rank_index / (n_records - 1)`；当 `n_records = 1` 时该 group 不产生 pair。
+3. 不枚举全量 pair。采样器通过随机抽 record index 生成候选 pair；候选 pair 必须
+   同 group、不同 record、`rank_label` 不相等，并经 canonical order 去重。
+4. 对每个候选 pair 计算：
+   `quantile_gap = abs(q_i - q_j)` 和 `raw_label_gap = abs(label_i - label_j)`。
+5. 先用最多 `gap_probe_pairs_per_group` 个随机候选 pair 估计 raw label gap 下限：
+   收集非零 `raw_label_gap`，取其 `raw_gap_min_quantile` 分位数作为
+   `raw_label_gap_min`。若 probe 得不到足够非零 gap，则退化为只要求
+   `label_i != label_j`。`label_kind = "binary"` 的 group 不额外应用 raw gap 下限。
+6. 若 `raw_label_gap < raw_label_gap_min`，候选 pair 进入 rejected 计数，不进入训练；
+   若 `quantile_gap < min_quantile_gap`，同样拒绝。默认 `min_quantile_gap = 0.0`，
+   即不启用全局分位数 gap 过滤。
+7. 对通过 gap 过滤的候选 pair，按 `quantile_gap` 进入难度桶。默认桶定义：
+   `local: [0.01, 0.05)`，`hard: [0.05, 0.20)`，
+   `medium: [0.20, 0.50)`，`easy: [0.50, 1.00]`。
+   `quantile_gap < 0.01` 的 pair 默认视为过近，除非调用方显式修改
+   `difficulty_bucket_edges`。
+8. 按 `difficulty_bucket_quotas` 从各桶取样。默认配额：
+   `easy = 0.40`、`medium = 0.30`、`hard = 0.20`、`local = 0.10`。
+   配额只决定目标比例，不允许复制 pair；某桶候选不足时，其剩余名额可按
+   `easy -> medium -> hard -> local` 的顺序重新分配给仍有候选的桶。
+9. 采样器还可受 `label_kind_pair_quotas` 和 `dataset_pair_quotas` 控制。quota
+   只在单次调用的全局 pair table 上生效，用于防止 predicted/binary 或超大 dataset
+   支配训练。quota 默认关闭；关闭时只受 per-group `max_pairs_per_group` 控制。
+10. 固定 `seed` 时，probe、候选生成、桶内采样、quota 重分配和最终 pair 排序都必须
+    可复现。
+
+`quantile_difficulty` 输出不得声称 pair 的 raw label 分布均匀。它的目标分布是
+"难度桶配额"，即按 `quantile_gap` 近似控制 easy/medium/hard/local 的比例。
+如果需要研究 raw label 差值分布，必须额外输出报告，不要在训练逻辑中隐式假设。
+
+**采样器性能与分布报告**
+
+任何新增或修改 pair sampler 时，都必须能生成采样器 QC 报告。建议输出到
+`reports/pair_sampling/`，至少包含：
+
+```text
+pair_sampler
+config_name
+n_input_records
+n_trainable_records
+n_groups_seen
+n_groups_with_pairs
+n_pairs_total
+n_pairs_by_label_kind
+n_pairs_by_dataset
+n_pairs_by_difficulty_bucket
+quantile_gap_min
+quantile_gap_p05
+quantile_gap_p50
+quantile_gap_p95
+raw_label_gap_min
+raw_label_gap_p05
+raw_label_gap_p50
+raw_label_gap_p95
+n_rejected_same_label
+n_rejected_raw_gap
+n_rejected_quantile_gap
+build_pairs_wall_seconds
+build_pairs_peak_rss_mb
+```
+
+比较 `block_quantile` 与 `quantile_difficulty` 时，至少报告三类结果：
+
+1. 采样分布：difficulty bucket、label_kind、dataset、group-level pair 数。
+2. 工程性能：`build_pairs_wall_seconds`、`build_pairs_peak_rss_mb`、最终 pair 数。
+3. 训练效果：同一 split、同一模型、同一 epoch 设置下的 valid/test group-level
+   Spearman，且必须按 `label_kind` 汇总。
+
 验收：
 
 1. 固定 seed 时 pair 结果可复现。
@@ -1107,6 +1230,14 @@ examples: tuple[AffinityExample, ...]   # 同一 group 内全部存活记录，�
    不得因为随机反复抽到同类而超时，也不得调用 quantile block 构造。
 7. 大 group 采样结果应同时覆盖跨 block pair；当 block 内存在至少两个不同 label 时，
    应覆盖同 block pair。
+8. `pair_sampler = "quantile_difficulty"` 时，输出 pair table 必须能关联到
+   `quantile_gap`、`raw_label_gap` 和 difficulty bucket 统计；训练用 pair table
+   可以不保存这些调试列，但 sampler QC 报告必须保存。
+9. `quantile_difficulty` 固定 seed 后结果可复现；改变 seed 后允许 pair 顺序和样本
+   变化，但仍必须满足不跨 group、不复制 pair、不生成同 label pair。
+10. `raw_gap_min_quantile`、`min_quantile_gap`、`difficulty_bucket_quotas` 配置非法时
+    必须抛 `ValueError`。
+11. quota 开启时，采样器必须报告 quota 前后的 pair 数，不得静默丢弃大量数据。
 
 **Group 构造规则**（`build_groups`，listwise 视图，与上面 Pair 构造规则共用第 1/3 条）
 
@@ -1862,6 +1993,12 @@ build_pairs large groups do not enumerate O(n^2) candidate pairs
 build_pairs large continuous groups return reproducible block-sampled pairs
 build_pairs imbalanced binary groups sample positive-negative pairs
 build_pairs large block sampler can include intra-block fine-grained pairs
+build_pairs quantile_difficulty assigns difficulty buckets by quantile_gap
+build_pairs quantile_difficulty estimates raw_gap_min from probe pairs
+build_pairs quantile_difficulty filters tiny raw/quantile gaps
+build_pairs quantile_difficulty respects difficulty bucket quotas when feasible
+build_pairs quantile_difficulty reports quota shortfalls instead of copying pairs
+build_pairs sampler QC reports pair distribution and build performance
 build_groups never crosses group_id
 build_groups skips single-label groups
 build_groups is reproducible with fixed seed

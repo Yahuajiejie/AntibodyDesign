@@ -330,8 +330,13 @@ def test_build_pairs_large_block_sampler_includes_cross_and_intra_block_pairs():
     assert (block_i == block_j).any()
 
 
-def test_build_pairs_large_imbalanced_binary_group_samples_across_classes():
+def test_build_pairs_large_imbalanced_binary_group_samples_across_classes(monkeypatch):
     records = _large_binary_records(n_negative=5_000, n_positive=10)
+
+    def fail_if_called(group, label_block_count):
+        raise AssertionError("binary large groups should not build quantile blocks")
+
+    monkeypatch.setattr(dataset_module, "_build_label_blocks", fail_if_called)
 
     pairs = build_pairs(
         records,
@@ -343,7 +348,7 @@ def test_build_pairs_large_imbalanced_binary_group_samples_across_classes():
         intra_block_pairs_per_large_group=10,
     )
 
-    assert len(pairs) > 0
+    assert len(pairs) == 30
     assert {frozenset(labels) for labels in zip(pairs["label_i"], pairs["label_j"])} == {
         frozenset({0.0, 1.0})
     }
