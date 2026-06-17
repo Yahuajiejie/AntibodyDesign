@@ -7,7 +7,8 @@ import math
 import pandas as pd
 import pytest
 
-import affinity_transformer.dataset as dataset_module
+import affinity_transformer.dataset.pair_sampling.large_group as large_group_module
+import affinity_transformer.dataset.pairs as pairs_module
 from affinity_transformer.dataset import (
     GROUP_COLUMNS,
     PAIR_COLUMNS,
@@ -270,7 +271,7 @@ def test_build_pairs_large_group_does_not_enumerate_all_pairs(monkeypatch):
     def fail_if_called(group):
         raise AssertionError("_candidate_pairs must not be called for large groups")
 
-    monkeypatch.setattr(dataset_module, "_candidate_pairs", fail_if_called)
+    monkeypatch.setattr(pairs_module, "_candidate_pairs", fail_if_called)
 
     pairs = build_pairs(
         records,
@@ -336,7 +337,7 @@ def test_build_pairs_large_imbalanced_binary_group_samples_across_classes(monkey
     def fail_if_called(group, label_block_count):
         raise AssertionError("binary large groups should not build quantile blocks")
 
-    monkeypatch.setattr(dataset_module, "_build_label_blocks", fail_if_called)
+    monkeypatch.setattr(large_group_module, "_build_label_blocks", fail_if_called)
 
     pairs = build_pairs(
         records,

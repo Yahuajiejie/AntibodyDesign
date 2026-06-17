@@ -43,9 +43,9 @@ def build_groups(
             rng = random.Random(f"{seed}:{group_id}")
             member_ids = sorted(rng.sample(member_ids, max_group_size))
 
-        group_by_id = group.set_index(group["record_id"].astype(str))
+        group_indexed_by_record_id = group.set_index(group["record_id"].astype(str))
         for record_id in member_ids:
-            row = group_by_id.loc[record_id]
+            row = group_indexed_by_record_id.loc[record_id]
             rows.append(
                 dict(
                     group_id=group_id,
