@@ -52,6 +52,18 @@ class DataConfig:
             `"absolute_cap"` preserves the legacy behavior.
         pair_fraction: Fraction used by `"capped_proportional"` sampling.
         min_pairs_per_group: Lower target used by `"capped_proportional"`.
+        large_group_threshold: Trainable-record threshold above which
+            `build_pairs` uses memory-safe block sampling.
+        pair_enumeration_limit: Candidate-pair threshold above which
+            `build_pairs` refuses full pair enumeration.
+        label_block_count: Number of rank-label quantile blocks used for
+            large-group sampling.
+        intra_block_pairs_per_large_group: Extra same-block fine-grained
+            pairs sampled for each large group.
+        discrete_label_unique_threshold: Unique-label threshold for treating
+            a large group as discrete/repeated-label.
+        discrete_label_ratio_threshold: Unique-label ratio threshold for
+            treating a large group as discrete/repeated-label.
         seed: Random seed used for pair sampling and any other randomness
             in the data pipeline.
         record_filter: Optional selector applied to `all_records_path` before
@@ -65,6 +77,12 @@ class DataConfig:
     pair_sample_strategy: str = "absolute_cap"
     pair_fraction: float | None = None
     min_pairs_per_group: int = 1
+    large_group_threshold: int = 10_000
+    pair_enumeration_limit: int = 100_000
+    label_block_count: int = 5
+    intra_block_pairs_per_large_group: int = 50
+    discrete_label_unique_threshold: int = 32
+    discrete_label_ratio_threshold: float = 0.05
     all_records_path: Path | None = None
     test_path: Path | None = None
     split_strategy: str = "none"
@@ -319,6 +337,14 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
             None if section.get("pair_fraction") is None else float(section["pair_fraction"])
         ),
         min_pairs_per_group=int(section.get("min_pairs_per_group", 1)),
+        large_group_threshold=int(section.get("large_group_threshold", 10_000)),
+        pair_enumeration_limit=int(section.get("pair_enumeration_limit", 100_000)),
+        label_block_count=int(section.get("label_block_count", 5)),
+        intra_block_pairs_per_large_group=int(
+            section.get("intra_block_pairs_per_large_group", 50)
+        ),
+        discrete_label_unique_threshold=int(section.get("discrete_label_unique_threshold", 32)),
+        discrete_label_ratio_threshold=float(section.get("discrete_label_ratio_threshold", 0.05)),
         all_records_path=all_records_path,
         test_path=test_path,
         split_strategy=split_strategy,

@@ -7,6 +7,7 @@ import math
 import pandas as pd
 import pytest
 
+import affinity_transformer.dataset as dataset_module
 from affinity_transformer.dataset import (
     GROUP_COLUMNS,
     PAIR_COLUMNS,
@@ -24,6 +25,89 @@ from affinity_transformer.dataset import (
 FV_GROUP = "studyA/tableA/agA/neg_log10_kd_M/experimental"
 BINARY_GROUP = "studyD/tableD/agD/bind/binary"
 SINGLE_LABEL_GROUP = "studyE/tableE/agE/neg_log10_kd_M/experimental"
+LARGE_GROUP = "studyLarge/tableLarge/agLarge/neg_log10_kd_M/experimental"
+
+
+def _standard_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "record_id": "record",
+        "dataset_id": "studyLarge/tableLarge",
+        "study_id": "studyLarge",
+        "table_id": "tableLarge",
+        "source_file": "data/binding/studyLarge/tableLarge.csv",
+        "source_row": 0,
+        "antibody_id": "ab",
+        "antibody_type": "Fv",
+        "heavy_chain": "QVQLVQSGAEVKKPGASVKVSCKAS",
+        "light_chain": "DIQMTQSPSSLSASVGDRVTITC",
+        "single_chain_sequence": None,
+        "antigen_key": "agLarge",
+        "antigen_name": "Antigen Large",
+        "antigen_sequence": "MKTAYIAKQRQISFVKSHFSRQLE",
+        "antigen_source": "provided",
+        "assay_name": "SPR",
+        "assay_type": "binding",
+        "metric_name": "neg_log10_kd_M",
+        "metric_value_raw": "1.0",
+        "metric_value_numeric": 1.0,
+        "metric_unit": "-log10(KD/M)",
+        "metric_direction": "higher_is_better",
+        "transform_rule": "rank_label = neg_log10_kd_M",
+        "rank_label": 1.0,
+        "label_kind": "experimental",
+        "group_id": LARGE_GROUP,
+        "keep_for_training": True,
+        "drop_reason": None,
+    }
+    row.update(overrides)
+    return row
+
+
+def _large_continuous_records(n_records: int) -> pd.DataFrame:
+    return pd.DataFrame([
+        _standard_row(
+            record_id=f"large/{i:05d}",
+            antibody_id=f"ab-{i:05d}",
+            source_row=i,
+            rank_label=float(i),
+            metric_value_raw=str(i),
+            metric_value_numeric=float(i),
+        )
+        for i in range(n_records)
+    ])
+
+
+def _large_binary_records(n_negative: int, n_positive: int) -> pd.DataFrame:
+    rows = []
+    for i in range(n_negative):
+        rows.append(_standard_row(
+            record_id=f"binary/neg/{i:05d}",
+            antibody_id=f"neg-{i:05d}",
+            source_row=i,
+            label_kind="binary",
+            rank_label=0.0,
+            metric_name="bind",
+            metric_value_raw="0",
+            metric_value_numeric=0.0,
+            metric_unit=None,
+            transform_rule="rank_label = bind (0/1)",
+            group_id="studyLarge/tableLarge/agLarge/bind/binary",
+        ))
+    for i in range(n_positive):
+        rows.append(_standard_row(
+            record_id=f"binary/pos/{i:05d}",
+            antibody_id=f"pos-{i:05d}",
+            source_row=n_negative + i,
+            label_kind="binary",
+            rank_label=1.0,
+            metric_name="bind",
+            metric_value_raw="1",
+            metric_value_numeric=1.0,
+            metric_unit=None,
+            transform_rule="rank_label = bind (0/1)",
+            group_id="studyLarge/tableLarge/agLarge/bind/binary",
+        ))
+    return pd.DataFrame(rows)
 
 
 # ── load_records ─────────────────────────────────────────────────────────────
@@ -178,6 +262,91 @@ def test_build_pairs_empty_when_no_trainable_pairs():
 
     assert list(pairs.columns) == list(PAIR_COLUMNS)
     assert len(pairs) == 0
+
+
+def test_build_pairs_large_group_does_not_enumerate_all_pairs(monkeypatch):
+    records = _large_continuous_records(20_000)
+
+    def fail_if_called(group):
+        raise AssertionError("_candidate_pairs must not be called for large groups")
+
+    monkeypatch.setattr(dataset_module, "_candidate_pairs", fail_if_called)
+
+    pairs = build_pairs(
+        records,
+        max_pairs_per_group=40,
+        seed=0,
+        large_group_threshold=1_000,
+        pair_enumeration_limit=1_000,
+        label_block_count=5,
+        intra_block_pairs_per_large_group=10,
+    )
+
+    assert len(pairs) == 50
+    assert not (pairs["label_i"] == pairs["label_j"]).any()
+
+
+def test_build_pairs_large_continuous_group_reproducible_with_fixed_seed():
+    records = _large_continuous_records(20_000)
+
+    pairs_a = build_pairs(
+        records,
+        max_pairs_per_group=40,
+        seed=123,
+        large_group_threshold=1_000,
+        pair_enumeration_limit=1_000,
+        label_block_count=5,
+        intra_block_pairs_per_large_group=10,
+    )
+    pairs_b = build_pairs(
+        records,
+        max_pairs_per_group=40,
+        seed=123,
+        large_group_threshold=1_000,
+        pair_enumeration_limit=1_000,
+        label_block_count=5,
+        intra_block_pairs_per_large_group=10,
+    )
+
+    pd.testing.assert_frame_equal(pairs_a, pairs_b)
+
+
+def test_build_pairs_large_block_sampler_includes_cross_and_intra_block_pairs():
+    records = _large_continuous_records(20_000)
+
+    pairs = build_pairs(
+        records,
+        max_pairs_per_group=40,
+        seed=0,
+        large_group_threshold=1_000,
+        pair_enumeration_limit=1_000,
+        label_block_count=5,
+        intra_block_pairs_per_large_group=10,
+    )
+
+    block_i = (pairs["label_i"] // 4000).astype(int)
+    block_j = (pairs["label_j"] // 4000).astype(int)
+    assert (block_i != block_j).any()
+    assert (block_i == block_j).any()
+
+
+def test_build_pairs_large_imbalanced_binary_group_samples_across_classes():
+    records = _large_binary_records(n_negative=5_000, n_positive=10)
+
+    pairs = build_pairs(
+        records,
+        max_pairs_per_group=30,
+        seed=0,
+        large_group_threshold=1_000,
+        pair_enumeration_limit=1_000,
+        label_block_count=5,
+        intra_block_pairs_per_large_group=10,
+    )
+
+    assert len(pairs) > 0
+    assert {frozenset(labels) for labels in zip(pairs["label_i"], pairs["label_j"])} == {
+        frozenset({0.0, 1.0})
+    }
 
 
 # ── build_groups ─────────────────────────────────────────────────────────────

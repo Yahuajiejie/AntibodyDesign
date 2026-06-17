@@ -63,6 +63,12 @@ def test_load_config_valid(tmp_path, existing_train_path):
     assert config.data.train_path == existing_train_path
     assert config.data.valid_path is None
     assert config.data.max_pairs_per_group == 50
+    assert config.data.large_group_threshold == 10_000
+    assert config.data.pair_enumeration_limit == 100_000
+    assert config.data.label_block_count == 5
+    assert config.data.intra_block_pairs_per_large_group == 50
+    assert config.data.discrete_label_unique_threshold == 32
+    assert config.data.discrete_label_ratio_threshold == pytest.approx(0.05)
     assert config.data.seed == 0
     assert config.model.antibody_encoder == "esm2_t12_35M"
     assert config.model.antigen_encoder is None
@@ -141,6 +147,33 @@ def test_load_config_does_not_apply_hidden_seed_default(tmp_path, existing_train
     config = load_config(config_path)
 
     assert config.data.seed == 12345
+
+
+def test_load_config_parses_large_group_pair_sampling_options(tmp_path, existing_train_path):
+    overrides = {
+        "data": {
+            "train_path": str(existing_train_path),
+            "valid_path": None,
+            "max_pairs_per_group": 200,
+            "seed": 0,
+            "large_group_threshold": 5000,
+            "pair_enumeration_limit": 20000,
+            "label_block_count": 4,
+            "intra_block_pairs_per_large_group": 25,
+            "discrete_label_unique_threshold": 16,
+            "discrete_label_ratio_threshold": 0.1,
+        }
+    }
+    config_path = _write_config(tmp_path, overrides, train_path=existing_train_path)
+
+    config = load_config(config_path)
+
+    assert config.data.large_group_threshold == 5000
+    assert config.data.pair_enumeration_limit == 20000
+    assert config.data.label_block_count == 4
+    assert config.data.intra_block_pairs_per_large_group == 25
+    assert config.data.discrete_label_unique_threshold == 16
+    assert config.data.discrete_label_ratio_threshold == pytest.approx(0.1)
 
 
 def test_load_config_parses_record_filter(tmp_path, existing_train_path):

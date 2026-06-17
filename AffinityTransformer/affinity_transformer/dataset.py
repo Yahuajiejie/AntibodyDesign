@@ -80,6 +80,12 @@ GROUP_COLUMNS: tuple[str, ...] = (
 )
 
 _BINARY_LABEL_KIND = "binary"
+_DEFAULT_LARGE_GROUP_THRESHOLD = 10_000
+_DEFAULT_PAIR_ENUMERATION_LIMIT = 100_000
+_DEFAULT_LABEL_BLOCK_COUNT = 5
+_DEFAULT_INTRA_BLOCK_PAIRS_PER_LARGE_GROUP = 50
+_DEFAULT_DISCRETE_LABEL_UNIQUE_THRESHOLD = 32
+_DEFAULT_DISCRETE_LABEL_RATIO_THRESHOLD = 0.05
 
 
 # ── example / pair containers (spec §5.2) ───────────────────────────────────
@@ -152,6 +158,16 @@ class AffinityGroupExample:
     group_id: str
     label_kind: str
     examples: tuple[AffinityExample, ...]
+
+
+@dataclass(frozen=True)
+class _LabelBlock:
+    """Rank-label quantile block used by the large-group pair sampler."""
+
+    index: int
+    items: tuple[tuple[str, float], ...]
+    label_to_ids: dict[float, tuple[str, ...]]
+    n_records: int
 
 
 # ── loading and filtering ────────────────────────────────────────────────────
@@ -308,6 +324,12 @@ def build_pairs(
     pair_sample_strategy: str = "absolute_cap",
     pair_fraction: float | None = None,
     min_pairs_per_group: int = 1,
+    large_group_threshold: int = _DEFAULT_LARGE_GROUP_THRESHOLD,
+    pair_enumeration_limit: int = _DEFAULT_PAIR_ENUMERATION_LIMIT,
+    label_block_count: int = _DEFAULT_LABEL_BLOCK_COUNT,
+    intra_block_pairs_per_large_group: int = _DEFAULT_INTRA_BLOCK_PAIRS_PER_LARGE_GROUP,
+    discrete_label_unique_threshold: int = _DEFAULT_DISCRETE_LABEL_UNIQUE_THRESHOLD,
+    discrete_label_ratio_threshold: float = _DEFAULT_DISCRETE_LABEL_RATIO_THRESHOLD,
 ) -> pd.DataFrame:
     """Build pairwise ranking examples within each group.
 
@@ -325,6 +347,20 @@ def build_pairs(
             `"capped_proportional"`.
         min_pairs_per_group: Lower target for `"capped_proportional"` before
             applying the upper cap. Never creates more pairs than a group has.
+        large_group_threshold: Groups with at least this many trainable
+            records use memory-safe block sampling instead of full pair
+            enumeration.
+        pair_enumeration_limit: Groups with more candidate pairs than this
+            use memory-safe block sampling even if they are below
+            `large_group_threshold`.
+        label_block_count: Number of rank-label quantile blocks used by the
+            large-group sampler.
+        intra_block_pairs_per_large_group: Extra fine-grained pairs sampled
+            from within rank-label blocks for large groups.
+        discrete_label_unique_threshold: Groups with at most this many unique
+            labels use label-aware block sampling.
+        discrete_label_ratio_threshold: Groups whose unique-label ratio is at
+            most this value use label-aware block sampling.
 
     Returns:
         DataFrame with pair_id, group_id, record_id_i, record_id_j, label_i,
@@ -341,46 +377,415 @@ def build_pairs(
     missing = [c for c in required if c not in records.columns]
     if missing:
         raise ValueError(f"records is missing required column(s): {missing}")
-    _validate_pair_sampling(max_pairs_per_group, pair_sample_strategy, pair_fraction, min_pairs_per_group)
+    _validate_pair_sampling(
+        max_pairs_per_group,
+        pair_sample_strategy,
+        pair_fraction,
+        min_pairs_per_group,
+        large_group_threshold,
+        pair_enumeration_limit,
+        label_block_count,
+        intra_block_pairs_per_large_group,
+        discrete_label_unique_threshold,
+        discrete_label_ratio_threshold,
+    )
 
     # Rules 1 and 3: only keep_for_training=True records with a finite label.
     trainable = filter_trainable_records(records)
 
     rows: list[dict[str, object]] = []
     for group_id, group in trainable.groupby("group_id", sort=True):
-        candidates = _candidate_pairs(group)
-        if not candidates:
+        n_candidates = _candidate_pair_count(group)
+        if n_candidates == 0:
             continue
 
-        # Rule 6: cap/sample pairs per group, deterministically from `seed`.
-        n_sample = _pair_sample_count(
-            len(candidates),
-            max_pairs_per_group=max_pairs_per_group,
-            pair_sample_strategy=pair_sample_strategy,
-            pair_fraction=pair_fraction,
-            min_pairs_per_group=min_pairs_per_group,
-        )
-        if len(candidates) > n_sample:
-            rng = random.Random(f"{seed}:{group_id}")
-            candidates = rng.sample(candidates, n_sample)
-            candidates.sort(key=lambda c: (c[0], c[1]))
+        if _should_enumerate_pairs(group, n_candidates, large_group_threshold, pair_enumeration_limit):
+            candidates = _candidate_pairs(group)
+            if not candidates:
+                continue
 
-        for record_id_i, record_id_j, label_i, label_j, y_ij in candidates:
-            rows.append(
-                dict(
-                    pair_id=f"{record_id_i}::{record_id_j}",
-                    group_id=group_id,
-                    record_id_i=record_id_i,
-                    record_id_j=record_id_j,
-                    label_i=label_i,
-                    label_j=label_j,
-                    y_ij=y_ij,
-                )
+            # Rule 6: cap/sample pairs per group, deterministically from `seed`.
+            n_sample = _pair_sample_count(
+                len(candidates),
+                max_pairs_per_group=max_pairs_per_group,
+                pair_sample_strategy=pair_sample_strategy,
+                pair_fraction=pair_fraction,
+                min_pairs_per_group=min_pairs_per_group,
             )
+            if len(candidates) > n_sample:
+                rng = random.Random(f"{seed}:{group_id}")
+                candidates = rng.sample(candidates, n_sample)
+                candidates.sort(key=lambda c: (c[0], c[1]))
+
+            for record_id_i, record_id_j, label_i, label_j, y_ij in candidates:
+                rows.append(_pair_row(group_id, record_id_i, record_id_j, label_i, label_j, y_ij))
+            continue
+
+        rows.extend(
+            _sample_large_group_pairs(
+                str(group_id),
+                group,
+                n_candidates=n_candidates,
+                max_pairs_per_group=max_pairs_per_group,
+                seed=seed,
+                pair_sample_strategy=pair_sample_strategy,
+                pair_fraction=pair_fraction,
+                min_pairs_per_group=min_pairs_per_group,
+                label_block_count=label_block_count,
+                intra_block_pairs_per_large_group=intra_block_pairs_per_large_group,
+                discrete_label_unique_threshold=discrete_label_unique_threshold,
+                discrete_label_ratio_threshold=discrete_label_ratio_threshold,
+            )
+        )
 
     if not rows:
         return pd.DataFrame(columns=PAIR_COLUMNS)
     return pd.DataFrame(rows, columns=PAIR_COLUMNS)
+
+
+def _pair_row(
+    group_id: object,
+    record_id_i: str,
+    record_id_j: str,
+    label_i: float,
+    label_j: float,
+    y_ij: float,
+) -> dict[str, object]:
+    return dict(
+        pair_id=f"{record_id_i}::{record_id_j}",
+        group_id=group_id,
+        record_id_i=record_id_i,
+        record_id_j=record_id_j,
+        label_i=label_i,
+        label_j=label_j,
+        y_ij=y_ij,
+    )
+
+
+def _candidate_pair_count(group: pd.DataFrame) -> int:
+    labels = group["rank_label"].astype(float)
+    counts = labels.value_counts(dropna=False)
+    n_records = int(counts.sum())
+    total = n_records * (n_records - 1) // 2
+    same_label = sum(int(count) * (int(count) - 1) // 2 for count in counts)
+    return int(total - same_label)
+
+
+def _should_enumerate_pairs(
+    group: pd.DataFrame,
+    n_candidates: int,
+    large_group_threshold: int,
+    pair_enumeration_limit: int,
+) -> bool:
+    return len(group) < large_group_threshold and n_candidates <= pair_enumeration_limit
+
+
+def _sample_large_group_pairs(
+    group_id: str,
+    group: pd.DataFrame,
+    n_candidates: int,
+    max_pairs_per_group: int,
+    seed: int,
+    pair_sample_strategy: str,
+    pair_fraction: float | None,
+    min_pairs_per_group: int,
+    label_block_count: int,
+    intra_block_pairs_per_large_group: int,
+    discrete_label_unique_threshold: int,
+    discrete_label_ratio_threshold: float,
+) -> list[dict[str, object]]:
+    blocks = _build_label_blocks(group, label_block_count)
+    use_label_buckets = _is_discrete_label_group(
+        group,
+        discrete_label_unique_threshold=discrete_label_unique_threshold,
+        discrete_label_ratio_threshold=discrete_label_ratio_threshold,
+    )
+    seen: set[tuple[str, str]] = set()
+    rows: list[dict[str, object]] = []
+
+    inter_target = _pair_sample_count(
+        n_candidates,
+        max_pairs_per_group=max_pairs_per_group,
+        pair_sample_strategy=pair_sample_strategy,
+        pair_fraction=pair_fraction,
+        min_pairs_per_group=min_pairs_per_group,
+    )
+    _sample_from_block_pairs(
+        blocks,
+        target=min(inter_target, n_candidates),
+        seed=f"{seed}:{group_id}:inter",
+        seen=seen,
+        rows=rows,
+        group_id=group_id,
+        use_label_buckets=use_label_buckets,
+    )
+
+    remaining = max(0, n_candidates - len(seen))
+    intra_target = min(intra_block_pairs_per_large_group, remaining)
+    if intra_target > 0:
+        _sample_within_blocks(
+            blocks,
+            target=intra_target,
+            seed=f"{seed}:{group_id}:intra",
+            seen=seen,
+            rows=rows,
+            group_id=group_id,
+            use_label_buckets=use_label_buckets,
+        )
+
+    rows.sort(key=lambda row: str(row["pair_id"]))
+    return rows
+
+
+def _build_label_blocks(group: pd.DataFrame, label_block_count: int) -> list[_LabelBlock]:
+    items = sorted(
+        zip(group["record_id"].astype(str), group["rank_label"].astype(float)),
+        key=lambda item: (item[1], item[0]),
+    )
+    n_blocks = min(label_block_count, len(items))
+    blocks: list[_LabelBlock] = []
+    for block_index in range(n_blocks):
+        start = block_index * len(items) // n_blocks
+        end = (block_index + 1) * len(items) // n_blocks
+        block_items = items[start:end]
+        label_to_ids: dict[float, list[str]] = {}
+        for record_id, label in block_items:
+            label_to_ids.setdefault(label, []).append(record_id)
+        blocks.append(
+            _LabelBlock(
+                index=block_index,
+                items=tuple(block_items),
+                label_to_ids={
+                    label: tuple(sorted(record_ids))
+                    for label, record_ids in sorted(label_to_ids.items(), key=lambda item: item[0])
+                },
+                n_records=end - start,
+            )
+        )
+    return blocks
+
+
+def _sample_from_block_pairs(
+    blocks: list[_LabelBlock],
+    target: int,
+    seed: str,
+    seen: set[tuple[str, str]],
+    rows: list[dict[str, object]],
+    group_id: str,
+    use_label_buckets: bool,
+) -> None:
+    candidates: list[tuple[tuple[_LabelBlock, _LabelBlock], int]] = []
+    for left, right in itertools.combinations(blocks, 2):
+        valid_count = _cross_block_candidate_count(left, right)
+        if valid_count > 0:
+            candidates.append(((left, right), valid_count * abs(right.index - left.index)))
+
+    if not candidates:
+        return
+
+    rng = random.Random(seed)
+    _sample_until_target(
+        target=target,
+        rng=rng,
+        seen=seen,
+        rows=rows,
+        group_id=group_id,
+        draw=lambda: _draw_between_blocks(candidates, rng, use_label_buckets),
+    )
+
+
+def _sample_within_blocks(
+    blocks: list[_LabelBlock],
+    target: int,
+    seed: str,
+    seen: set[tuple[str, str]],
+    rows: list[dict[str, object]],
+    group_id: str,
+    use_label_buckets: bool,
+) -> None:
+    candidates = [
+        (block, _within_block_candidate_count(block))
+        for block in blocks
+        if _within_block_candidate_count(block) > 0
+    ]
+    if not candidates:
+        return
+
+    rng = random.Random(seed)
+    _sample_until_target(
+        target=target,
+        rng=rng,
+        seen=seen,
+        rows=rows,
+        group_id=group_id,
+        draw=lambda: _draw_within_block(candidates, rng, use_label_buckets),
+    )
+
+
+def _sample_until_target(
+    target: int,
+    rng: random.Random,
+    seen: set[tuple[str, str]],
+    rows: list[dict[str, object]],
+    group_id: str,
+    draw,
+) -> None:
+    start_count = len(rows)
+    max_attempts = max(1000, target * 100)
+    attempts = 0
+    while len(rows) - start_count < target and attempts < max_attempts:
+        attempts += 1
+        drawn = draw()
+        if drawn is None:
+            continue
+        record_id_a, label_a, record_id_b, label_b = drawn
+        if label_a == label_b:
+            continue
+        record_id_i, label_i, record_id_j, label_j = _canonical_pair(
+            record_id_a, label_a, record_id_b, label_b
+        )
+        key = (record_id_i, record_id_j)
+        if key in seen:
+            continue
+        seen.add(key)
+        y_ij = 1.0 if label_i > label_j else 0.0
+        rows.append(_pair_row(group_id, record_id_i, record_id_j, label_i, label_j, y_ij))
+
+
+def _canonical_pair(
+    record_id_a: str,
+    label_a: float,
+    record_id_b: str,
+    label_b: float,
+) -> tuple[str, float, str, float]:
+    if record_id_a <= record_id_b:
+        return record_id_a, label_a, record_id_b, label_b
+    return record_id_b, label_b, record_id_a, label_a
+
+
+def _draw_between_blocks(
+    candidates: list[tuple[tuple[_LabelBlock, _LabelBlock], int]],
+    rng: random.Random,
+    use_label_buckets: bool,
+) -> tuple[str, float, str, float] | None:
+    left, right = _weighted_choice(candidates, rng)
+    if not use_label_buckets:
+        record_id_left, label_left = rng.choice(left.items)
+        record_id_right, label_right = rng.choice(right.items)
+        return record_id_left, label_left, record_id_right, label_right
+
+    label_left = _weighted_label_excluding(left, right, rng)
+    if label_left is None:
+        return None
+    label_right = _weighted_choice(
+        [
+            (label, len(record_ids))
+            for label, record_ids in right.label_to_ids.items()
+            if label != label_left
+        ],
+        rng,
+    )
+    return (
+        rng.choice(left.label_to_ids[label_left]),
+        label_left,
+        rng.choice(right.label_to_ids[label_right]),
+        label_right,
+    )
+
+
+def _draw_within_block(
+    candidates: list[tuple[_LabelBlock, int]],
+    rng: random.Random,
+    use_label_buckets: bool,
+) -> tuple[str, float, str, float] | None:
+    block = _weighted_choice(candidates, rng)
+    if not use_label_buckets:
+        record_id_a, label_a = rng.choice(block.items)
+        record_id_b, label_b = rng.choice(block.items)
+        return record_id_a, label_a, record_id_b, label_b
+
+    label_a = _weighted_label_excluding(block, block, rng)
+    if label_a is None:
+        return None
+    label_b = _weighted_choice(
+        [
+            (label, len(record_ids))
+            for label, record_ids in block.label_to_ids.items()
+            if label != label_a
+        ],
+        rng,
+    )
+    return (
+        rng.choice(block.label_to_ids[label_a]),
+        label_a,
+        rng.choice(block.label_to_ids[label_b]),
+        label_b,
+    )
+
+
+def _weighted_label_excluding(
+    source: _LabelBlock,
+    other: _LabelBlock,
+    rng: random.Random,
+) -> float | None:
+    weighted_labels: list[tuple[float, int]] = []
+    for label, record_ids in source.label_to_ids.items():
+        other_same = len(other.label_to_ids.get(label, ()))
+        weight = len(record_ids) * (other.n_records - other_same)
+        if weight > 0:
+            weighted_labels.append((label, weight))
+    if not weighted_labels:
+        return None
+    return _weighted_choice(weighted_labels, rng)
+
+
+def _cross_block_candidate_count(left: _LabelBlock, right: _LabelBlock) -> int:
+    same_label = sum(
+        len(left_ids) * len(right.label_to_ids.get(label, ()))
+        for label, left_ids in left.label_to_ids.items()
+    )
+    return left.n_records * right.n_records - same_label
+
+
+def _within_block_candidate_count(block: _LabelBlock) -> int:
+    total = block.n_records * (block.n_records - 1) // 2
+    same_label = sum(
+        len(record_ids) * (len(record_ids) - 1) // 2
+        for record_ids in block.label_to_ids.values()
+    )
+    return total - same_label
+
+
+def _is_discrete_label_group(
+    group: pd.DataFrame,
+    discrete_label_unique_threshold: int,
+    discrete_label_ratio_threshold: float,
+) -> bool:
+    label_kind = group["label_kind"].astype(str).str.lower()
+    if (label_kind == _BINARY_LABEL_KIND).any():
+        return True
+    labels = group["rank_label"].astype(float)
+    n_records = len(labels)
+    if n_records == 0:
+        return False
+    n_unique = int(labels.nunique(dropna=False))
+    return (
+        n_unique <= discrete_label_unique_threshold
+        or n_unique / n_records <= discrete_label_ratio_threshold
+    )
+
+
+def _weighted_choice(items, rng: random.Random):
+    total = sum(weight for _, weight in items)
+    if total <= 0:
+        raise ValueError("weighted choice requires at least one positive weight")
+    threshold = rng.uniform(0, total)
+    cumulative = 0.0
+    for value, weight in items:
+        cumulative += weight
+        if threshold <= cumulative:
+            return value
+    return items[-1][0]
 
 
 def _validate_pair_sampling(
@@ -388,11 +793,38 @@ def _validate_pair_sampling(
     pair_sample_strategy: str,
     pair_fraction: float | None,
     min_pairs_per_group: int,
+    large_group_threshold: int,
+    pair_enumeration_limit: int,
+    label_block_count: int,
+    intra_block_pairs_per_large_group: int,
+    discrete_label_unique_threshold: int,
+    discrete_label_ratio_threshold: float,
 ) -> None:
     if max_pairs_per_group < 1:
         raise ValueError(f"max_pairs_per_group must be >= 1, got {max_pairs_per_group}")
     if min_pairs_per_group < 1:
         raise ValueError(f"min_pairs_per_group must be >= 1, got {min_pairs_per_group}")
+    if large_group_threshold < 2:
+        raise ValueError(f"large_group_threshold must be >= 2, got {large_group_threshold}")
+    if pair_enumeration_limit < 1:
+        raise ValueError(f"pair_enumeration_limit must be >= 1, got {pair_enumeration_limit}")
+    if label_block_count < 2:
+        raise ValueError(f"label_block_count must be >= 2, got {label_block_count}")
+    if intra_block_pairs_per_large_group < 0:
+        raise ValueError(
+            "intra_block_pairs_per_large_group must be >= 0, "
+            f"got {intra_block_pairs_per_large_group}"
+        )
+    if discrete_label_unique_threshold < 2:
+        raise ValueError(
+            "discrete_label_unique_threshold must be >= 2, "
+            f"got {discrete_label_unique_threshold}"
+        )
+    if not (0.0 < discrete_label_ratio_threshold <= 1.0):
+        raise ValueError(
+            "discrete_label_ratio_threshold must be in (0, 1], "
+            f"got {discrete_label_ratio_threshold}"
+        )
     if pair_sample_strategy not in {"absolute_cap", "capped_proportional"}:
         raise ValueError(
             "pair_sample_strategy must be 'absolute_cap' or 'capped_proportional', "

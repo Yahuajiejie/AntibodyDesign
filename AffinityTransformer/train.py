@@ -153,6 +153,12 @@ def _build_train_loader(
         pair_sample_strategy=config.data.pair_sample_strategy,
         pair_fraction=config.data.pair_fraction,
         min_pairs_per_group=config.data.min_pairs_per_group,
+        large_group_threshold=config.data.large_group_threshold,
+        pair_enumeration_limit=config.data.pair_enumeration_limit,
+        label_block_count=config.data.label_block_count,
+        intra_block_pairs_per_large_group=config.data.intra_block_pairs_per_large_group,
+        discrete_label_unique_threshold=config.data.discrete_label_unique_threshold,
+        discrete_label_ratio_threshold=config.data.discrete_label_ratio_threshold,
     )
     if pairs.empty:
         raise ValueError(f"No trainable pairs could be built from {path}")
