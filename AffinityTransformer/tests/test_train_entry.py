@@ -85,7 +85,10 @@ def test_run_training_writes_checkpoint_and_metrics(
         )
         return model, antibody_tokenizer, None
 
-    monkeypatch.setattr(train, "build_model_and_tokenizers", fake_build_model_and_tokenizers)
+    monkeypatch.setattr(
+        "affinity_transformer.training.online.build_model_and_tokenizers",
+        fake_build_model_and_tokenizers,
+    )
 
     output_dir = tmp_path / "out"
     metrics = train.run_training(config_path, output_dir)
@@ -137,7 +140,7 @@ def test_resolve_data_paths_applies_record_filter_before_split(tmp_path, toy_rec
     }))
 
     config = load_config(config_path)
-    train_path, valid_path, test_path = train._resolve_data_paths(config)
+    train_path, valid_path, test_path = train.resolve_data_paths(config)
 
     assert train_path.exists()
     assert valid_path.exists()
