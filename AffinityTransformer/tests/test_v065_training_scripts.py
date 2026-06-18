@@ -77,8 +77,12 @@ def test_write_training_configs_generates_concat_and_fixed_deep_depths(tmp_path:
         assert raw["model"]["interaction"]["num_layers"] == depth
         assert raw["model"]["antibody_encoder"]["mode"] == "frozen_cached"
         assert raw["train"]["device"] == "cuda"
+        assert raw["train"]["num_workers"] == 4
+        assert raw["train"]["pin_memory"] is True
         config = load_config(path)
         assert config.model.interaction.num_layers == depth
+        assert config.train.num_workers == 4
+        assert config.train.pin_memory is True
 
 
 def test_new_slurm_shell_scripts_pass_bash_syntax_check():

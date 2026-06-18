@@ -34,6 +34,7 @@ def build_online_train_loader(
     pairs = _build_pairs(records, config)
     if pairs.empty:
         raise ValueError(f"No trainable pairs could be built from {path}")
+    nw = config.train.num_workers
     loader = DataLoader(
         PairwiseAffinityDataset(records, pairs),
         batch_size=config.train.batch_size,
@@ -43,6 +44,9 @@ def build_online_train_loader(
             antibody_tokenizer=antibody_tokenizer,
             antigen_tokenizer=antigen_tokenizer,
         ),
+        num_workers=nw,
+        pin_memory=config.train.pin_memory,
+        persistent_workers=nw > 0,
     )
     return records, loader
 
@@ -56,6 +60,7 @@ def build_online_rank_loader(
     if path is None:
         return None, None
     records = filter_trainable_records(load_records(path))
+    nw = config.train.num_workers
     loader = DataLoader(
         AffinityRecordDataset(records),
         batch_size=config.train.batch_size,
@@ -65,6 +70,9 @@ def build_online_rank_loader(
             antibody_tokenizer=antibody_tokenizer,
             antigen_tokenizer=antigen_tokenizer,
         ),
+        num_workers=nw,
+        pin_memory=config.train.pin_memory,
+        persistent_workers=nw > 0,
     )
     return records, loader
 
@@ -78,6 +86,7 @@ def build_cached_train_loader(
     pairs = _build_pairs(records, config)
     if pairs.empty:
         raise ValueError("No trainable pairs could be built for frozen_cached training")
+    nw = config.train.num_workers
     return DataLoader(
         PairwiseAffinityDataset(records, pairs),
         batch_size=config.train.batch_size,
@@ -87,6 +96,9 @@ def build_cached_train_loader(
             antibody_store=antibody_store,
             antigen_store=antigen_store,
         ),
+        num_workers=nw,
+        pin_memory=config.train.pin_memory,
+        persistent_workers=nw > 0,
     )
 
 
@@ -98,6 +110,7 @@ def build_cached_rank_loader(
 ) -> DataLoader | None:
     if records is None:
         return None
+    nw = config.train.num_workers
     return DataLoader(
         AffinityRecordDataset(records),
         batch_size=config.train.batch_size,
@@ -107,6 +120,9 @@ def build_cached_rank_loader(
             antibody_store=antibody_store,
             antigen_store=antigen_store,
         ),
+        num_workers=nw,
+        pin_memory=config.train.pin_memory,
+        persistent_workers=nw > 0,
     )
 
 

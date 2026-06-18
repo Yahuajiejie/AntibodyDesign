@@ -46,6 +46,8 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1.0e-4)
     parser.add_argument("--max-pairs-per-group", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--pin-memory", action="store_true", default=True)
     args = parser.parse_args()
 
     split_paths = {
@@ -130,6 +132,8 @@ def main() -> None:
         lr=args.lr,
         max_pairs_per_group=args.max_pairs_per_group,
         seed=args.seed,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
     )
 
 
@@ -150,6 +154,8 @@ def write_training_configs(
     lr: float,
     max_pairs_per_group: int,
     seed: int,
+    num_workers: int = 4,
+    pin_memory: bool = True,
 ) -> list[Path]:
     """Write one Concat and three fixed-depth Deep RankNet configs."""
     if d_model < 1 or num_heads < 1 or d_model % num_heads != 0:
@@ -190,6 +196,8 @@ def write_training_configs(
             "lr": lr,
             "epochs": epochs,
             "device": "cuda",
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
         },
     }
     variants = [("concat", 0), *[("deep_cross_attention", n) for n in (4, 8, 16)]]

@@ -162,12 +162,18 @@ class TrainConfig:
         lr: Optimizer learning rate.
         epochs: Number of training epochs.
         device: Torch device string, e.g. "cpu" or "cuda".
+        num_workers: DataLoader worker processes for async prefetch (default 0 = synchronous).
+            Set to 4-8 on SLURM nodes to overlap disk I/O with GPU compute.
+        pin_memory: Pass pin_memory=True to DataLoader for faster CPU→GPU transfer.
+            Only effective when device=cuda.
     """
 
     batch_size: int
     lr: float
     epochs: int
     device: str
+    num_workers: int = 0
+    pin_memory: bool = False
 
 
 @dataclass
@@ -632,4 +638,6 @@ def _build_train_config(section: dict[str, Any]) -> TrainConfig:
         lr=float(section["lr"]),
         epochs=int(section["epochs"]),
         device=str(section["device"]),
+        num_workers=int(section.get("num_workers", 0)),
+        pin_memory=bool(section.get("pin_memory", False)),
     )
