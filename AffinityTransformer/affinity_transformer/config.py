@@ -92,24 +92,65 @@ class DataConfig:
     record_filter: RecordFilterConfig = field(default_factory=RecordFilterConfig)
 
 
-@dataclass
-class ModelConfig:
-    """Model architecture switches.
+@dataclass(frozen=True)
+class EncoderConfig:
+    """One frozen/online foundation-model representation source."""
 
-    Attributes:
-        antibody_encoder: Name/identifier of the antibody sequence encoder.
-        antigen_encoder: Name/identifier of the antigen sequence encoder,
-            or None if the model runs in antibody-only mode.
-        d_model: Shared hidden dimension used across encoders and the
-            scoring head.
-        use_cross_attention: Whether the model applies antibody-antigen
-            cross-attention (ignored when `antigen_encoder` is None).
-    """
+    name: str
+    revision: str
+    tokenizer_revision: str
+    mode: str
+    embedding_layer: int
+    cache_dir: Path | None
+    max_length: int | None
+    long_sequence_strategy: str
+    lora_rank: int | None = None
+    lora_alpha: float | None = None
+    lora_dropout: float | None = None
 
-    antibody_encoder: str
-    antigen_encoder: str | None
+
+@dataclass(frozen=True)
+class InteractionConfig:
+    """Trainable fusion/projection/scoring architecture."""
+
+    kind: str
     d_model: int
-    use_cross_attention: bool
+    num_layers: int
+    num_heads: int
+    ffn_multiplier: float
+    dropout: float
+    pooling: str
+    bidirectional: bool
+
+
+@dataclass(frozen=True)
+class ObjectiveConfig:
+    """Ranking objective selected by the Trainer."""
+
+    name: str
+    temperature: float
+    sigma: float
+    pointwise_loss: str
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """Embedding encoders, trainable interaction, and ranking objective."""
+
+    antibody_encoder: EncoderConfig
+    antigen_encoder: EncoderConfig | None
+    interaction: InteractionConfig
+    objective: ObjectiveConfig
+
+    @property
+    def d_model(self) -> int:
+        """Compatibility view used by the legacy online model path."""
+        return self.interaction.d_model
+
+    @property
+    def use_cross_attention(self) -> bool:
+        """Compatibility view used by the legacy online model path."""
+        return self.interaction.kind == "deep_cross_attention"
 
 
 @dataclass
@@ -146,8 +187,13 @@ class Config:
 
 _DATA_REQUIRED_KEYS = ("train_path", "valid_path", "max_pairs_per_group", "seed")
 _VALID_SPLIT_STRATEGIES = {"none", "debug_record_split", "group_holdout_split"}
-_MODEL_REQUIRED_KEYS = ("antibody_encoder", "antigen_encoder", "d_model", "use_cross_attention")
 _TRAIN_REQUIRED_KEYS = ("batch_size", "lr", "epochs", "device")
+
+_ENCODER_MODES = {"frozen_cached", "frozen_online", "lora_online"}
+_LONG_SEQUENCE_STRATEGIES = {"error", "truncate", "chunk"}
+_INTERACTION_KINDS = {"antibody_only", "concat", "deep_cross_attention"}
+_POOLING_KINDS = {"masked_mean", "attention_pool"}
+_OBJECTIVES = {"pointwise", "pairwise_ranknet", "listwise_listnet"}
 
 
 def load_config(path: Path) -> Config:
@@ -356,28 +402,215 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
 
 
 def _build_model_config(section: dict[str, Any]) -> ModelConfig:
-    """Build `ModelConfig` from the `model` section of a config file.
+    """Build the v0.65 nested model config, accepting legacy YAML temporarily."""
+    antibody_raw = section.get("antibody_encoder")
+    if isinstance(antibody_raw, dict):
+        _require_keys(section, ("antibody_encoder", "antigen_encoder", "interaction", "objective"), "model")
+        antibody_encoder = _build_encoder_config(antibody_raw, "model.antibody_encoder")
+        antigen_raw = section["antigen_encoder"]
+        if antigen_raw is not None and not isinstance(antigen_raw, dict):
+            raise ValueError("Config field 'model.antigen_encoder' must be a mapping or null")
+        antigen_encoder = (
+            None
+            if antigen_raw is None
+            else _build_encoder_config(antigen_raw, "model.antigen_encoder")
+        )
+        interaction = _build_interaction_config(section["interaction"])
+        objective = _build_objective_config(section["objective"])
+    else:
+        antibody_encoder, antigen_encoder, interaction, objective = _build_legacy_model_config(section)
 
-    Args:
-        section: The `model` mapping from the parsed YAML file.
-
-    Returns:
-        A `ModelConfig` populated from `section`.
-
-    Raises:
-        ValueError: If a required field is missing.
-    """
-    _require_keys(section, _MODEL_REQUIRED_KEYS, "model")
-
-    antigen_encoder_value = section["antigen_encoder"]
-    antigen_encoder = None if antigen_encoder_value is None else str(antigen_encoder_value)
-
+    _validate_model_combination(antibody_encoder, antigen_encoder, interaction)
     return ModelConfig(
-        antibody_encoder=str(section["antibody_encoder"]),
+        antibody_encoder=antibody_encoder,
         antigen_encoder=antigen_encoder,
-        d_model=int(section["d_model"]),
-        use_cross_attention=bool(section["use_cross_attention"]),
+        interaction=interaction,
+        objective=objective,
     )
+
+
+def _build_encoder_config(section: dict[str, Any], field_name: str) -> EncoderConfig:
+    required = (
+        "name", "revision", "mode", "embedding_layer", "cache_dir",
+        "max_length", "long_sequence_strategy",
+    )
+    _require_keys(section, required, field_name)
+    name = str(section["name"]).strip()
+    revision = str(section["revision"]).strip()
+    tokenizer_revision = str(section.get("tokenizer_revision", revision)).strip()
+    mode = str(section["mode"])
+    strategy = str(section["long_sequence_strategy"])
+    cache_dir = _optional_existing_path(section["cache_dir"], f"{field_name}.cache_dir")
+    max_length = None if section["max_length"] is None else int(section["max_length"])
+    if not name or not revision or not tokenizer_revision:
+        raise ValueError(f"Config field '{field_name}' requires non-empty name/revisions")
+    if mode not in _ENCODER_MODES:
+        raise ValueError(f"Config field '{field_name}.mode' must be one of {sorted(_ENCODER_MODES)}")
+    if strategy not in _LONG_SEQUENCE_STRATEGIES:
+        raise ValueError(
+            f"Config field '{field_name}.long_sequence_strategy' must be one of "
+            f"{sorted(_LONG_SEQUENCE_STRATEGIES)}"
+        )
+    if max_length is not None and max_length < 1:
+        raise ValueError(f"Config field '{field_name}.max_length' must be null or positive")
+    if strategy in {"truncate", "chunk"} and max_length is None:
+        raise ValueError(f"Config field '{field_name}.max_length' is required for strategy={strategy!r}")
+    if mode == "frozen_cached":
+        if cache_dir is None:
+            raise ValueError(f"Config field '{field_name}.cache_dir' is required for frozen_cached")
+        if not cache_dir.is_dir():
+            raise ValueError(f"Config field '{field_name}.cache_dir' must be a directory")
+        if revision.lower() in {"main", "master", "latest"}:
+            raise ValueError(f"Config field '{field_name}.revision' must be immutable for frozen_cached")
+        if tokenizer_revision.lower() in {"main", "master", "latest"}:
+            raise ValueError(
+                f"Config field '{field_name}.tokenizer_revision' must be immutable for frozen_cached"
+            )
+    lora_rank = _optional_int(section.get("lora_rank"))
+    lora_alpha = _optional_float(section.get("lora_alpha"))
+    lora_dropout = _optional_float(section.get("lora_dropout"))
+    if mode == "lora_online":
+        if lora_rank is None or lora_rank < 1 or lora_alpha is None or lora_alpha <= 0:
+            raise ValueError(f"Config field '{field_name}' requires positive LoRA rank and alpha")
+        if lora_dropout is None or not 0.0 <= lora_dropout < 1.0:
+            raise ValueError(f"Config field '{field_name}.lora_dropout' must satisfy 0 <= value < 1")
+        if cache_dir is not None:
+            raise ValueError(f"Config field '{field_name}.cache_dir' must be null for lora_online")
+    return EncoderConfig(
+        name=name,
+        revision=revision,
+        tokenizer_revision=tokenizer_revision,
+        mode=mode,
+        embedding_layer=int(section["embedding_layer"]),
+        cache_dir=cache_dir,
+        max_length=max_length,
+        long_sequence_strategy=strategy,
+        lora_rank=lora_rank,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+    )
+
+
+def _build_interaction_config(raw: Any) -> InteractionConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Config field 'model.interaction' must be a mapping")
+    required = (
+        "kind", "d_model", "num_layers", "num_heads", "ffn_multiplier",
+        "dropout", "pooling", "bidirectional",
+    )
+    _require_keys(raw, required, "model.interaction")
+    config = InteractionConfig(
+        kind=str(raw["kind"]),
+        d_model=int(raw["d_model"]),
+        num_layers=int(raw["num_layers"]),
+        num_heads=int(raw["num_heads"]),
+        ffn_multiplier=float(raw["ffn_multiplier"]),
+        dropout=float(raw["dropout"]),
+        pooling=str(raw["pooling"]),
+        bidirectional=_require_bool(raw["bidirectional"], "model.interaction.bidirectional"),
+    )
+    if config.kind not in _INTERACTION_KINDS:
+        raise ValueError(f"model.interaction.kind must be one of {sorted(_INTERACTION_KINDS)}")
+    if config.d_model < 1 or config.num_heads < 1 or config.d_model % config.num_heads != 0:
+        raise ValueError("model.interaction requires positive d_model divisible by num_heads")
+    if config.ffn_multiplier <= 0 or not 0.0 <= config.dropout < 1.0:
+        raise ValueError("model.interaction requires positive ffn_multiplier and 0 <= dropout < 1")
+    if config.pooling not in _POOLING_KINDS:
+        raise ValueError(f"model.interaction.pooling must be one of {sorted(_POOLING_KINDS)}")
+    if config.kind == "deep_cross_attention" and config.num_layers < 1:
+        raise ValueError("deep_cross_attention requires num_layers >= 1")
+    if config.kind != "deep_cross_attention" and config.num_layers != 0:
+        raise ValueError(f"{config.kind} requires num_layers == 0")
+    return config
+
+
+def _build_objective_config(raw: Any) -> ObjectiveConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("Config field 'model.objective' must be a mapping")
+    _require_keys(raw, ("name", "temperature", "sigma", "pointwise_loss"), "model.objective")
+    config = ObjectiveConfig(
+        name=str(raw["name"]),
+        temperature=float(raw["temperature"]),
+        sigma=float(raw["sigma"]),
+        pointwise_loss=str(raw["pointwise_loss"]),
+    )
+    if config.name not in _OBJECTIVES:
+        raise ValueError(f"model.objective.name must be one of {sorted(_OBJECTIVES)}")
+    if config.temperature <= 0 or config.sigma <= 0:
+        raise ValueError("model.objective temperature and sigma must be positive")
+    if config.pointwise_loss not in {"huber", "mse"}:
+        raise ValueError("model.objective.pointwise_loss must be 'huber' or 'mse'")
+    return config
+
+
+def _build_legacy_model_config(
+    section: dict[str, Any],
+) -> tuple[EncoderConfig, EncoderConfig | None, InteractionConfig, ObjectiveConfig]:
+    """Translate the pre-v0.65 flat YAML format to online-mode config objects."""
+    required = ("antibody_encoder", "antigen_encoder", "d_model", "use_cross_attention")
+    _require_keys(section, required, "model")
+    antibody = _legacy_encoder(str(section["antibody_encoder"]))
+    antigen = None if section["antigen_encoder"] is None else _legacy_encoder(str(section["antigen_encoder"]))
+    use_cross_attention = _require_bool(section["use_cross_attention"], "model.use_cross_attention")
+    kind = "antibody_only" if antigen is None else ("deep_cross_attention" if use_cross_attention else "concat")
+    interaction = InteractionConfig(
+        kind=kind,
+        d_model=int(section["d_model"]),
+        num_layers=1 if kind == "deep_cross_attention" else 0,
+        num_heads=1,
+        ffn_multiplier=4.0,
+        dropout=0.1,
+        pooling="masked_mean",
+        bidirectional=False,
+    )
+    objective = ObjectiveConfig(
+        name="pairwise_ranknet", temperature=1.0, sigma=1.0, pointwise_loss="huber"
+    )
+    return antibody, antigen, interaction, objective
+
+
+def _legacy_encoder(name: str) -> EncoderConfig:
+    return EncoderConfig(
+        name=name,
+        revision="main",
+        tokenizer_revision="main",
+        mode="frozen_online",
+        embedding_layer=-1,
+        cache_dir=None,
+        max_length=None,
+        long_sequence_strategy="error",
+    )
+
+
+def _validate_model_combination(
+    antibody: EncoderConfig,
+    antigen: EncoderConfig | None,
+    interaction: InteractionConfig,
+) -> None:
+    if interaction.kind == "antibody_only" and antigen is not None:
+        raise ValueError("antibody_only requires model.antigen_encoder=null")
+    if interaction.kind != "antibody_only" and antigen is None:
+        raise ValueError(f"{interaction.kind} requires model.antigen_encoder")
+    if antigen is not None:
+        cached_modes = {antibody.mode, antigen.mode}
+        if "frozen_cached" in cached_modes and cached_modes != {"frozen_cached"}:
+            raise ValueError(
+                "cached antibody/antigen interaction requires both encoders in frozen_cached mode"
+            )
+
+
+def _require_bool(value: Any, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"Config field '{field_name}' must be boolean")
+    return value
+
+
+def _optional_int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 def _build_train_config(section: dict[str, Any]) -> TrainConfig:

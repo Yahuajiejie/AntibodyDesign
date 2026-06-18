@@ -24,6 +24,8 @@ class _HuggingFaceTokenExtractor:
         embedding_layer: int = -1,
         output_dtype: torch.dtype = torch.float16,
         max_length: int | None = None,
+        tokenizer_revision: str | None = None,
+        long_sequence_strategy: str | None = None,
     ) -> None:
         if max_length is not None and max_length < 1:
             raise ValueError("max_length must be None or >= 1")
@@ -31,6 +33,7 @@ class _HuggingFaceTokenExtractor:
             raise ValueError("output_dtype must be floating point")
         self.encoder_name = encoder_name
         self.encoder_revision = encoder_revision
+        self.tokenizer_revision = tokenizer_revision or encoder_revision
         self.model = model.to(torch.device(device))
         self.model.eval()
         for parameter in self.model.parameters():
@@ -40,6 +43,9 @@ class _HuggingFaceTokenExtractor:
         self.embedding_layer = embedding_layer
         self.output_dtype = output_dtype
         self.max_length = max_length
+        self.long_sequence_strategy = long_sequence_strategy or (
+            "truncate" if max_length is not None else "error"
+        )
 
     def encode(
         self,
@@ -102,6 +108,7 @@ class _HuggingFaceTokenExtractor:
             "embedding_layer": self.embedding_layer,
             "output_dtype": str(self.output_dtype).removeprefix("torch."),
             "max_length": self.max_length,
+            "long_sequence_strategy": self.long_sequence_strategy,
             "base_model_frozen": True,
             "padding_removed": True,
             "special_tokens_removed": True,
@@ -147,18 +154,24 @@ class Esm2EmbeddingExtractor(_HuggingFaceTokenExtractor):
         model_name: str,
         *,
         revision: str = "main",
+        tokenizer_revision: str | None = None,
         **kwargs: object,
     ) -> "Esm2EmbeddingExtractor":
         """Load ESM-2 lazily; no network/model work happens at module import."""
         from transformers import AutoModel, AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+        resolved_tokenizer_revision = tokenizer_revision or revision
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=resolved_tokenizer_revision,
+        )
         model = AutoModel.from_pretrained(model_name, revision=revision)
         return cls(
             encoder_name=model_name,
             encoder_revision=revision,
             model=model,
             tokenizer=tokenizer,
+            tokenizer_revision=resolved_tokenizer_revision,
             **kwargs,
         )
 
@@ -187,14 +200,16 @@ class IgBertEmbeddingExtractor(_HuggingFaceTokenExtractor):
         model_name: str = "Exscientia/IgBert",
         *,
         revision: str = "main",
+        tokenizer_revision: str | None = None,
         **kwargs: object,
     ) -> "IgBertEmbeddingExtractor":
         """Load IgBERT lazily with its case-sensitive BERT tokenizer."""
         from transformers import BertModel, BertTokenizer
 
+        resolved_tokenizer_revision = tokenizer_revision or revision
         tokenizer = BertTokenizer.from_pretrained(
             model_name,
-            revision=revision,
+            revision=resolved_tokenizer_revision,
             do_lower_case=False,
         )
         model = BertModel.from_pretrained(
@@ -207,6 +222,7 @@ class IgBertEmbeddingExtractor(_HuggingFaceTokenExtractor):
             encoder_revision=revision,
             model=model,
             tokenizer=tokenizer,
+            tokenizer_revision=resolved_tokenizer_revision,
             **kwargs,
         )
 

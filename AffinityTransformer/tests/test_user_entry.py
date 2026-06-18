@@ -8,7 +8,15 @@ import pandas as pd
 import pytest
 import torch
 
-from affinity_transformer.config import Config, DataConfig, ModelConfig, TrainConfig
+from affinity_transformer.config import (
+    Config,
+    DataConfig,
+    EncoderConfig,
+    InteractionConfig,
+    ModelConfig,
+    ObjectiveConfig,
+    TrainConfig,
+)
 from affinity_transformer.model import AffinityRanker
 from affinity_transformer.user_entry import (
     AffinityPredictor,
@@ -38,10 +46,21 @@ def _config():
             seed=0,
         ),
         model=ModelConfig(
-            antibody_encoder="fake",
+            antibody_encoder=EncoderConfig(
+                name="fake", revision="main", tokenizer_revision="main",
+                mode="frozen_online", embedding_layer=-1, cache_dir=None,
+                max_length=None, long_sequence_strategy="error",
+            ),
             antigen_encoder=None,
-            d_model=D_MODEL,
-            use_cross_attention=False,
+            interaction=InteractionConfig(
+                kind="antibody_only", d_model=D_MODEL, num_layers=0,
+                num_heads=1, ffn_multiplier=4.0, dropout=0.1,
+                pooling="masked_mean", bidirectional=False,
+            ),
+            objective=ObjectiveConfig(
+                name="pairwise_ranknet", temperature=1.0, sigma=1.0,
+                pointwise_loss="huber",
+            ),
         ),
         train=TrainConfig(batch_size=4, lr=1.0e-3, epochs=1, device="cpu"),
     )

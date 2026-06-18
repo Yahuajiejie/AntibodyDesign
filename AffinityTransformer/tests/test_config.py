@@ -70,11 +70,129 @@ def test_load_config_valid(tmp_path, existing_train_path):
     assert config.data.discrete_label_unique_threshold == 32
     assert config.data.discrete_label_ratio_threshold == pytest.approx(0.05)
     assert config.data.seed == 0
-    assert config.model.antibody_encoder == "esm2_t12_35M"
+    assert config.model.antibody_encoder.name == "esm2_t12_35M"
+    assert config.model.antibody_encoder.mode == "frozen_online"
     assert config.model.antigen_encoder is None
+    assert config.model.interaction.kind == "antibody_only"
+    assert config.model.objective.name == "pairwise_ranknet"
     assert config.model.use_cross_attention is False
     assert config.train.device == "cpu"
     assert config.train.lr == pytest.approx(1.0e-4)
+
+
+def test_load_config_parses_v065_cached_concat_model(tmp_path, existing_train_path):
+    antibody_cache = tmp_path / "ab-cache"
+    antigen_cache = tmp_path / "ag-cache"
+    antibody_cache.mkdir()
+    antigen_cache.mkdir()
+    model = {
+        "antibody_encoder": {
+            "name": "igbert",
+            "revision": "ab-rev-123",
+            "tokenizer_revision": "ab-tokenizer-123",
+            "mode": "frozen_cached",
+            "embedding_layer": -1,
+            "cache_dir": str(antibody_cache),
+            "max_length": 256,
+            "long_sequence_strategy": "truncate",
+        },
+        "antigen_encoder": {
+            "name": "esm2_t12_35M",
+            "revision": "ag-rev-456",
+            "tokenizer_revision": "ag-tokenizer-456",
+            "mode": "frozen_cached",
+            "embedding_layer": -1,
+            "cache_dir": str(antigen_cache),
+            "max_length": 1024,
+            "long_sequence_strategy": "truncate",
+        },
+        "interaction": {
+            "kind": "concat",
+            "d_model": 64,
+            "num_layers": 0,
+            "num_heads": 8,
+            "ffn_multiplier": 4.0,
+            "dropout": 0.1,
+            "pooling": "masked_mean",
+            "bidirectional": True,
+        },
+        "objective": {
+            "name": "pairwise_ranknet",
+            "temperature": 1.0,
+            "sigma": 2.0,
+            "pointwise_loss": "huber",
+        },
+    }
+    config_path = _write_config(
+        tmp_path,
+        {"model": model},
+        train_path=existing_train_path,
+    )
+
+    config = load_config(config_path)
+
+    assert config.model.antibody_encoder.cache_dir == antibody_cache
+    assert config.model.antigen_encoder is not None
+    assert config.model.antigen_encoder.tokenizer_revision == "ag-tokenizer-456"
+    assert config.model.interaction.kind == "concat"
+    assert config.model.interaction.num_layers == 0
+    assert config.model.objective.sigma == pytest.approx(2.0)
+
+
+def test_cached_config_rejects_floating_revision(tmp_path, existing_train_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    model = {
+        "antibody_encoder": {
+            "name": "igbert",
+            "revision": "main",
+            "mode": "frozen_cached",
+            "embedding_layer": -1,
+            "cache_dir": str(cache_dir),
+            "max_length": None,
+            "long_sequence_strategy": "error",
+        },
+        "antigen_encoder": None,
+        "interaction": {
+            "kind": "antibody_only", "d_model": 16, "num_layers": 0,
+            "num_heads": 1, "ffn_multiplier": 4.0, "dropout": 0.1,
+            "pooling": "masked_mean", "bidirectional": False,
+        },
+        "objective": {
+            "name": "pairwise_ranknet", "temperature": 1.0,
+            "sigma": 1.0, "pointwise_loss": "huber",
+        },
+    }
+    config_path = _write_config(tmp_path, {"model": model}, train_path=existing_train_path)
+
+    with pytest.raises(ValueError, match="immutable"):
+        load_config(config_path)
+
+
+def test_concat_config_requires_antigen_encoder(tmp_path, existing_train_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    model = {
+        "antibody_encoder": {
+            "name": "igbert", "revision": "rev-1", "mode": "frozen_cached",
+            "embedding_layer": -1, "cache_dir": str(cache_dir), "max_length": None,
+            "long_sequence_strategy": "error",
+        },
+        "antigen_encoder": None,
+        "interaction": {
+            "kind": "concat", "d_model": 16, "num_layers": 0,
+            "num_heads": 1, "ffn_multiplier": 4.0, "dropout": 0.1,
+            "pooling": "masked_mean", "bidirectional": True,
+        },
+        "objective": {
+            "name": "pairwise_ranknet", "temperature": 1.0,
+            "sigma": 1.0, "pointwise_loss": "huber",
+        },
+    }
+    config_path = _write_config(tmp_path, {"model": model}, train_path=existing_train_path)
+
+    with pytest.raises(ValueError, match="requires model.antigen_encoder"):
+        load_config(config_path)
 
 
 def test_load_config_missing_file(tmp_path):

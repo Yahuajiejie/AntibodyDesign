@@ -122,6 +122,9 @@ def write_embedding_cache(
         "cache_schema": "token_embedding_cache_v1",
         "encoder_name": extractor.encoder_name,
         "encoder_revision": extractor.encoder_revision,
+        "tokenizer_revision": getattr(
+            extractor, "tokenizer_revision", extractor.encoder_revision
+        ),
         "n_items": len(unique),
         "shard_size": shard_size,
         "sequence_type_counts": {

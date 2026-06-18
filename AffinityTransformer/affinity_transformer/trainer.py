@@ -1,9 +1,8 @@
 """Training loop, validation, and checkpointing (spec docs/programming_spec.md §5.7).
 
-`Trainer` only consumes already-built objects: a constructed `AffinityRanker`
-(spec §5.4) and `DataLoader`s whose `collate_fn` is already wired to
-`collate_pair_batch` / `collate_rank_batch` (spec §5.3) with whatever
-tokenizers the caller chose. This module does not read raw CSVs, does not
+`Trainer` only consumes already-built objects: a constructed ranker and
+`DataLoader`s already wired for either embedding-backed cached batches or the
+explicit legacy online token batches. This module does not read raw CSVs, does not
 build pairs or groups (that is `dataset.py`, spec §5.2), and does not run
 `compute_group_spearman` itself (that is `metrics.py`, spec §5.6) -- it only
 calls it.
@@ -18,6 +17,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from typing import Mapping
 
 import pandas as pd
 import torch
@@ -25,7 +25,13 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from .config import Config, ModelConfig
-from .dataloader import PairBatch, RankBatch, Tokenizer
+from .dataloader import (
+    EmbeddingBatch,
+    PairBatch,
+    PairEmbeddingBatch,
+    RankBatch,
+    Tokenizer,
+)
 from .metrics import compute_group_spearman, summarize_group_spearman
 from .model import AffinityRanker
 from .model.losses import ranknet_loss
@@ -61,7 +67,25 @@ def _move_rank_batch(batch: RankBatch, device: torch.device) -> RankBatch:
     )
 
 
-def _move_pair_batch(batch: PairBatch, device: torch.device) -> PairBatch:
+def _move_embedding_batch(batch: EmbeddingBatch, device: torch.device) -> EmbeddingBatch:
+    """Return an embedding batch with tensors moved to ``device``."""
+    return EmbeddingBatch(
+        antibody_embeddings=batch.antibody_embeddings.to(device),
+        antibody_mask=batch.antibody_mask.to(device),
+        antigen_embeddings=(
+            None if batch.antigen_embeddings is None else batch.antigen_embeddings.to(device)
+        ),
+        antigen_mask=None if batch.antigen_mask is None else batch.antigen_mask.to(device),
+        labels=batch.labels.to(device),
+        record_ids=batch.record_ids,
+        group_ids=batch.group_ids,
+    )
+
+
+def _move_pair_batch(
+    batch: PairBatch | PairEmbeddingBatch,
+    device: torch.device,
+) -> PairBatch | PairEmbeddingBatch:
     """Return a copy of `batch` with every tensor moved to `device`.
 
     Args:
@@ -72,26 +96,50 @@ def _move_pair_batch(batch: PairBatch, device: torch.device) -> PairBatch:
         A new `PairBatch` with `left`/`right` moved via `_move_rank_batch`
         and `y_ij` moved to `device`.
     """
-    return PairBatch(
-        left=_move_rank_batch(batch.left, device),
-        right=_move_rank_batch(batch.right, device),
-        y_ij=batch.y_ij.to(device),
+    if isinstance(batch, PairEmbeddingBatch):
+        return PairEmbeddingBatch(
+            left=_move_embedding_batch(batch.left, device),
+            right=_move_embedding_batch(batch.right, device),
+            y_ij=batch.y_ij.to(device),
+        )
+    if isinstance(batch, PairBatch):
+        return PairBatch(
+            left=_move_rank_batch(batch.left, device),
+            right=_move_rank_batch(batch.right, device),
+            y_ij=batch.y_ij.to(device),
+        )
+    raise TypeError(
+        "pairwise_ranknet requires PairEmbeddingBatch (cached path) or "
+        f"PairBatch (legacy online path), got {type(batch).__name__}"
+    )
+
+
+def _move_record_batch(
+    batch: RankBatch | EmbeddingBatch,
+    device: torch.device,
+) -> RankBatch | EmbeddingBatch:
+    if isinstance(batch, EmbeddingBatch):
+        return _move_embedding_batch(batch, device)
+    if isinstance(batch, RankBatch):
+        return _move_rank_batch(batch, device)
+    raise TypeError(
+        "record evaluation requires EmbeddingBatch (cached path) or "
+        f"RankBatch (legacy online path), got {type(batch).__name__}"
     )
 
 
 class Trainer:
-    """Runs the RankNet training loop, validation, and checkpointing (spec §5.7).
+    """Runs the ranking training loop, validation, and checkpointing (spec §5.7).
 
     `Trainer` is built via dependency injection: `model` and the
-    `DataLoader`s are already fully constructed (including whichever
-    tokenizers their `collate_fn`s use), so this class never needs to know
-    whether it is training on real ESM2 encoders or the
-    `FakeEncoder`/`FakeTokenizer` test doubles.
+    `DataLoader`s are already fully constructed, so this class never loads a
+    base encoder or reads an embedding shard. The batch type makes the cached
+    versus legacy online path explicit.
     """
 
     def __init__(
         self,
-        model: AffinityRanker,
+        model: nn.Module,
         config: Config,
         train_dataloader: DataLoader,
         valid_dataloader: DataLoader | None = None,
@@ -99,6 +147,7 @@ class Trainer:
         output_dir: Path | None = None,
         early_stopping_patience: int | None = None,
         early_stopping_metric: str = "valid_weighted_spearman",
+        embedding_metadata_hashes: Mapping[str, str] | None = None,
     ) -> None:
         """Build a `Trainer` around an already-constructed model.
 
@@ -164,6 +213,7 @@ class Trainer:
         self.output_dir = None if output_dir is None else Path(output_dir)
         self.early_stopping_patience = early_stopping_patience
         self.early_stopping_metric = early_stopping_metric
+        self.embedding_metadata_hashes = dict(embedding_metadata_hashes or {})
 
         self.global_step = 0
         self.history: list[dict[str, float]] = []
@@ -254,6 +304,12 @@ class Trainer:
             ValueError: If `train_dataloader` yields no batches.
         """
         self.model.train()
+        objective = self.config.model.objective.name
+        if objective != "pairwise_ranknet":
+            raise NotImplementedError(
+                f"Trainer objective {objective!r} is not implemented yet; "
+                "the current embedding integration supports pairwise_ranknet"
+            )
         total_loss = 0.0
         n_batches = 0
 
@@ -261,7 +317,12 @@ class Trainer:
             batch = _move_pair_batch(batch, self.device)
             score_i = self.model(batch.left)
             score_j = self.model(batch.right)
-            loss = ranknet_loss(score_i, score_j, batch.y_ij)
+            loss = ranknet_loss(
+                score_i,
+                score_j,
+                batch.y_ij,
+                sigma=self.config.model.objective.sigma,
+            )
 
             if torch.isnan(loss):
                 error_path = self._save_error_context(epoch, batch, score_i, score_j)
@@ -284,7 +345,11 @@ class Trainer:
         return total_loss / n_batches
 
     def _save_error_context(
-        self, epoch: int, batch: PairBatch, score_i: torch.Tensor, score_j: torch.Tensor
+        self,
+        epoch: int,
+        batch: PairBatch | PairEmbeddingBatch,
+        score_i: torch.Tensor,
+        score_j: torch.Tensor,
     ) -> Path | None:
         """Write the state surrounding a NaN loss to `output_dir` (spec §5.7 rule 5).
 
@@ -355,7 +420,7 @@ class Trainer:
         rows: list[dict[str, object]] = []
         with torch.no_grad():
             for batch in dataloader:
-                batch = _move_rank_batch(batch, self.device)
+                batch = _move_record_batch(batch, self.device)
                 scores = self.model(batch)
                 for record_id, group_id, label, score in zip(
                     batch.record_ids, batch.group_ids, batch.labels.tolist(), scores.tolist()
@@ -406,6 +471,7 @@ class Trainer:
                 "config": self.config,
                 "global_step": self.global_step,
                 "seed": self.config.data.seed,
+                "embedding_metadata_hashes": self.embedding_metadata_hashes,
             },
             path,
         )
@@ -434,6 +500,12 @@ class Trainer:
             checkpoint = torch.load(path, map_location=map_location or self.device, weights_only=False)
         except TypeError:
             checkpoint = torch.load(path, map_location=map_location or self.device)
+        checkpoint_hashes = dict(checkpoint.get("embedding_metadata_hashes", {}))
+        if checkpoint_hashes != self.embedding_metadata_hashes:
+            raise ValueError(
+                "checkpoint embedding metadata hash mismatch: "
+                f"{checkpoint_hashes} != {self.embedding_metadata_hashes}"
+            )
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.global_step = int(checkpoint["global_step"])
         return checkpoint
@@ -588,24 +660,46 @@ def build_model_and_tokenizers(
         convention; this is a known limitation of the current ESM2-only
         mapping, not addressed here.
     """
-    antibody_repo = _resolve_esm2(model_config.antibody_encoder, "antibody_encoder", model_config.d_model)
+    antibody_config = model_config.antibody_encoder
+    antigen_config = model_config.antigen_encoder
+    if antibody_config.mode == "frozen_cached" or (
+        antigen_config is not None and antigen_config.mode == "frozen_cached"
+    ):
+        raise ValueError(
+            "build_model_and_tokenizers is the online path and cannot consume "
+            "frozen_cached config; use model.build_ranker with validated caches"
+        )
+    antibody_repo = _resolve_esm2(
+        antibody_config.name, "antibody_encoder", model_config.d_model
+    )
     antigen_repo = (
         None
-        if model_config.antigen_encoder is None
-        else _resolve_esm2(model_config.antigen_encoder, "antigen_encoder", model_config.d_model)
+        if antigen_config is None
+        else _resolve_esm2(antigen_config.name, "antigen_encoder", model_config.d_model)
     )
 
     from transformers import AutoModel, AutoTokenizer  # lazy: spec §9
 
-    antibody_tokenizer = AutoTokenizer.from_pretrained(antibody_repo)
-    antibody_encoder = _Esm2EncoderWrapper(AutoModel.from_pretrained(antibody_repo))
+    antibody_tokenizer = AutoTokenizer.from_pretrained(
+        antibody_repo,
+        revision=antibody_config.tokenizer_revision,
+    )
+    antibody_encoder = _Esm2EncoderWrapper(
+        AutoModel.from_pretrained(antibody_repo, revision=antibody_config.revision)
+    )
 
     if antigen_repo is None:
         antigen_tokenizer = None
         antigen_encoder = None
     else:
-        antigen_tokenizer = AutoTokenizer.from_pretrained(antigen_repo)
-        antigen_encoder = _Esm2EncoderWrapper(AutoModel.from_pretrained(antigen_repo))
+        assert antigen_config is not None
+        antigen_tokenizer = AutoTokenizer.from_pretrained(
+            antigen_repo,
+            revision=antigen_config.tokenizer_revision,
+        )
+        antigen_encoder = _Esm2EncoderWrapper(
+            AutoModel.from_pretrained(antigen_repo, revision=antigen_config.revision)
+        )
 
     model = AffinityRanker(
         antibody_encoder=antibody_encoder,

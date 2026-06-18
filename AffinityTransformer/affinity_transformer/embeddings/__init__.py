@@ -29,9 +29,11 @@ from .store import (
     InMemoryEmbeddingStore,
     ShardedEmbeddingStore,
 )
+from .validation import CacheDescriptor, validate_embedding_cache
 
 __all__ = [
     "AntibodySequenceInput",
+    "CacheDescriptor",
     "EmbeddingBatch",
     "EmbeddingExtractor",
     "EmbeddingItem",
@@ -54,4 +56,5 @@ __all__ = [
     "register_embedding_extractor",
     "registered_embedding_extractors",
     "write_embedding_cache",
+    "validate_embedding_cache",
 ]

@@ -7,10 +7,19 @@ import math
 from pathlib import Path
 
 import pytest
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from affinity_transformer.config import Config, DataConfig, ModelConfig, TrainConfig
+from affinity_transformer.config import (
+    Config,
+    DataConfig,
+    EncoderConfig,
+    InteractionConfig,
+    ModelConfig,
+    ObjectiveConfig,
+    TrainConfig,
+)
 from affinity_transformer.dataloader import collate_pair_batch, collate_rank_batch
 from affinity_transformer.dataset import (
     AffinityRecordDataset,
@@ -18,7 +27,8 @@ from affinity_transformer.dataset import (
     build_pairs,
     filter_trainable_records,
 )
-from affinity_transformer.model import AffinityRanker
+from affinity_transformer.embeddings import EmbeddingBatch, PairEmbeddingBatch
+from affinity_transformer.model import AffinityRanker, EmbeddingAffinityRanker
 from affinity_transformer.trainer import (
     ESM2_D_MODEL,
     Trainer,
@@ -32,8 +42,46 @@ D_MODEL = 16
 def _make_config(epochs: int = 1, seed: int = 0) -> Config:
     return Config(
         data=DataConfig(train_path=Path("unused.parquet"), valid_path=None, max_pairs_per_group=50, seed=seed),
-        model=ModelConfig(antibody_encoder="fake", antigen_encoder=None, d_model=D_MODEL, use_cross_attention=False),
+        model=_online_model_config("fake", d_model=D_MODEL),
         train=TrainConfig(batch_size=4, lr=1.0e-3, epochs=epochs, device="cpu"),
+    )
+
+
+def _online_model_config(
+    antibody_name: str,
+    *,
+    antigen_name: str | None = None,
+    d_model: int,
+) -> ModelConfig:
+    encoder = lambda name: EncoderConfig(
+        name=name,
+        revision="main",
+        tokenizer_revision="main",
+        mode="frozen_online",
+        embedding_layer=-1,
+        cache_dir=None,
+        max_length=None,
+        long_sequence_strategy="error",
+    )
+    return ModelConfig(
+        antibody_encoder=encoder(antibody_name),
+        antigen_encoder=None if antigen_name is None else encoder(antigen_name),
+        interaction=InteractionConfig(
+            kind="antibody_only" if antigen_name is None else "concat",
+            d_model=d_model,
+            num_layers=0,
+            num_heads=1,
+            ffn_multiplier=4.0,
+            dropout=0.1,
+            pooling="masked_mean",
+            bidirectional=False,
+        ),
+        objective=ObjectiveConfig(
+            name="pairwise_ranknet",
+            temperature=1.0,
+            sigma=1.0,
+            pointwise_loss="huber",
+        ),
     )
 
 
@@ -224,6 +272,92 @@ def test_trainer_early_stopping_stops_after_patience(toy_records, antibody_token
     assert trainer.global_step == 2 * n_batches
 
 
+def _embedding_batches():
+    records = EmbeddingBatch(
+        antibody_embeddings=torch.randn(2, 3, 5),
+        antibody_mask=torch.tensor([[True, True, False], [True, True, True]]),
+        antigen_embeddings=None,
+        antigen_mask=None,
+        labels=torch.tensor([2.0, 1.0]),
+        record_ids=["r1", "r2"],
+        group_ids=["g", "g"],
+    )
+    pair = PairEmbeddingBatch(
+        left=EmbeddingBatch(
+            antibody_embeddings=records.antibody_embeddings[:1],
+            antibody_mask=records.antibody_mask[:1],
+            antigen_embeddings=None,
+            antigen_mask=None,
+            labels=records.labels[:1],
+            record_ids=["r1"],
+            group_ids=["g"],
+        ),
+        right=EmbeddingBatch(
+            antibody_embeddings=records.antibody_embeddings[1:],
+            antibody_mask=records.antibody_mask[1:],
+            antigen_embeddings=None,
+            antigen_mask=None,
+            labels=records.labels[1:],
+            record_ids=["r2"],
+            group_ids=["g"],
+        ),
+        y_ij=torch.tensor([1.0]),
+    )
+    return pair, records
+
+
+def _embedding_trainer(*, hashes=None):
+    pair, records = _embedding_batches()
+    model = EmbeddingAffinityRanker(
+        antibody_input_dim=5,
+        antigen_input_dim=None,
+        d_model=D_MODEL,
+        fusion_kind="antibody_only",
+        dropout=0.0,
+    )
+    metadata = pd.DataFrame([
+        {"record_id": "r1", "dataset_id": "d", "label_kind": "experimental"},
+        {"record_id": "r2", "dataset_id": "d", "label_kind": "experimental"},
+    ])
+    return Trainer(
+        model=model,
+        config=_make_config(),
+        train_dataloader=[pair],
+        valid_dataloader=[records],
+        valid_record_metadata=metadata,
+        embedding_metadata_hashes=hashes,
+    )
+
+
+def test_trainer_runs_pair_embedding_batch_and_embedding_evaluation():
+    trainer = _embedding_trainer(hashes={"antibody": "hash-a"})
+
+    trainer.fit()
+    metrics = trainer.evaluate(trainer.valid_dataloader)
+
+    assert trainer.global_step == 1
+    assert "valid_weighted_spearman" in metrics
+
+
+def test_checkpoint_rejects_embedding_metadata_hash_mismatch(tmp_path):
+    trainer = _embedding_trainer(hashes={"antibody": "hash-a"})
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    trainer.save_checkpoint(checkpoint_path)
+    incompatible = _embedding_trainer(hashes={"antibody": "hash-b"})
+
+    with pytest.raises(ValueError, match="metadata hash mismatch"):
+        incompatible.load_checkpoint(checkpoint_path)
+
+
+def test_pairwise_trainer_rejects_record_batch_as_training_batch():
+    trainer = _embedding_trainer()
+    _, record_batch = _embedding_batches()
+    trainer.train_dataloader = [record_batch]
+
+    with pytest.raises(TypeError, match="PairEmbeddingBatch"):
+        trainer.fit()
+
+
 # ── build_model_and_tokenizers / _resolve_esm2 (spec §5.7 mapping) ──────────
 
 
@@ -242,15 +376,15 @@ def test_resolve_esm2_d_model_mismatch_raises():
 
 
 def test_build_model_and_tokenizers_unsupported_antibody_encoder_raises_before_network():
-    model_config = ModelConfig(antibody_encoder="ablang2", antigen_encoder=None, d_model=480, use_cross_attention=False)
+    model_config = _online_model_config("ablang2", d_model=480)
 
     with pytest.raises(ValueError):
         build_model_and_tokenizers(model_config)
 
 
 def test_build_model_and_tokenizers_unsupported_antigen_encoder_raises_before_network():
-    model_config = ModelConfig(
-        antibody_encoder="esm2_t12_35M", antigen_encoder="ablang2", d_model=480, use_cross_attention=False
+    model_config = _online_model_config(
+        "esm2_t12_35M", antigen_name="ablang2", d_model=480
     )
 
     with pytest.raises(ValueError):
@@ -258,7 +392,7 @@ def test_build_model_and_tokenizers_unsupported_antigen_encoder_raises_before_ne
 
 
 def test_build_model_and_tokenizers_d_model_mismatch_raises_before_network():
-    model_config = ModelConfig(antibody_encoder="esm2_t12_35M", antigen_encoder=None, d_model=999, use_cross_attention=False)
+    model_config = _online_model_config("esm2_t12_35M", d_model=999)
 
     with pytest.raises(ValueError):
         build_model_and_tokenizers(model_config)

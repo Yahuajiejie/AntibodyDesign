@@ -119,6 +119,13 @@ class ShardedEmbeddingStore:
                 f"embedding shape mismatch for {key}: manifest "
                 f"({expected_length}, {expected_dim}), shard {tuple(item.values.shape)}"
             )
+        expected_dtype = str(row["dtype"])
+        actual_dtype = str(item.values.dtype).removeprefix("torch.")
+        if actual_dtype != expected_dtype:
+            raise ValueError(
+                f"embedding dtype mismatch for {key}: manifest {expected_dtype}, "
+                f"shard {actual_dtype}"
+            )
         return item
 
     def _load_shard(self, path: Path) -> Mapping[str, object]:
