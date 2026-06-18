@@ -260,7 +260,7 @@ def test_trainer_early_stopping_stops_after_patience(toy_records, antibody_token
     n_batches = len(trainer.train_dataloader)
 
     # A constant validation metric never "improves" after the first epoch.
-    trainer.evaluate = lambda dataloader: {
+    trainer.evaluate = lambda dataloader, epoch=None: {
         "valid_macro_spearman": 0.5,
         "valid_weighted_spearman": 0.5,
         "n_valid_groups": 4.0,
