@@ -21,6 +21,10 @@ class TokenProjection(nn.Module):
     def forward(self, embeddings: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Return projected tokens with every invalid position reset to zero."""
         _validate_token_tensor(embeddings, mask, self.input_dim)
+        # Cached embeddings are commonly float16 while trainable projection
+        # parameters default to float32. Keep this boundary independent of
+        # whether a caller enabled autocast.
+        embeddings = embeddings.to(dtype=self.input_norm.weight.dtype)
         projected = self.projection(self.input_norm(embeddings))
         return projected.masked_fill(~mask.unsqueeze(-1), 0.0)
 

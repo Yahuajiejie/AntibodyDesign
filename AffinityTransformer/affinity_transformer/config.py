@@ -517,8 +517,8 @@ def _build_interaction_config(raw: Any) -> InteractionConfig:
         raise ValueError("model.interaction requires positive ffn_multiplier and 0 <= dropout < 1")
     if config.pooling not in _POOLING_KINDS:
         raise ValueError(f"model.interaction.pooling must be one of {sorted(_POOLING_KINDS)}")
-    if config.kind == "deep_cross_attention" and config.num_layers < 1:
-        raise ValueError("deep_cross_attention requires num_layers >= 1")
+    if config.kind == "deep_cross_attention" and config.num_layers not in {4, 8, 16}:
+        raise ValueError("deep_cross_attention requires num_layers in {4, 8, 16}")
     if config.kind != "deep_cross_attention" and config.num_layers != 0:
         raise ValueError(f"{config.kind} requires num_layers == 0")
     return config

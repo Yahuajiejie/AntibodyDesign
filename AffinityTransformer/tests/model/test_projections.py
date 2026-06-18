@@ -20,3 +20,15 @@ def test_projection_changes_width_and_zeros_padding():
 def test_projection_rejects_wrong_input_width():
     with pytest.raises(ValueError, match="dim mismatch"):
         TokenProjection(5, 8)(torch.randn(1, 2, 6), torch.ones(1, 2, dtype=torch.bool))
+
+
+def test_projection_accepts_float16_cached_embeddings():
+    projection = TokenProjection(5, 8)
+    embeddings = torch.randn(2, 3, 5, dtype=torch.float16)
+    mask = torch.tensor([[True, True, False], [True, True, True]])
+
+    output = projection(embeddings, mask)
+
+    assert output.dtype == torch.float32
+    assert output.shape == (2, 3, 8)
+    assert torch.isfinite(output).all()

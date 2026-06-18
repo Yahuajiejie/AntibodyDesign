@@ -25,7 +25,7 @@ conda activate "${ENV_NAME}"
 
 # Install via conda (uses cluster's local mirror, no public internet needed)
 conda install -n "${ENV_NAME}" -y \
-  pandas pyarrow pyyaml scipy
+  pandas pyarrow pyyaml scipy pytest
 
 # pytorch with CUDA 11.8 — conda channel takes priority over pip
 conda install -n "${ENV_NAME}" -y \
@@ -34,10 +34,10 @@ conda install -n "${ENV_NAME}" -y \
   echo "[WARN] conda pytorch install failed, will try pip fallback below"
 
 # transformers not in standard conda channels, try pip (may need mirror)
-pip install transformers \
+pip install transformers huggingface_hub safetensors tokenizers \
   --no-deps \
   --index-url https://pypi.tuna.tsinghua.edu.cn/simple || \
-  pip install transformers --no-deps
+  pip install transformers huggingface_hub safetensors tokenizers --no-deps
 
 # python -m pip check  # skipped: base Anaconda packages cause false positives in conda envs
 

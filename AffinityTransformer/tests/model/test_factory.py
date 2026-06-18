@@ -112,3 +112,33 @@ def test_build_ranker_rejects_wrong_cache_role(tmp_path: Path):
             config,
             _descriptor(tmp_path / "ab", "ab", "antigen", 5),
         )
+
+
+def test_build_ranker_rejects_unapproved_deep_layer_count(tmp_path: Path):
+    config = _model_config(tmp_path, "deep_cross_attention", 2)
+
+    with pytest.raises(ValueError, match="requires 4, 8, or 16"):
+        build_ranker(
+            config,
+            _descriptor(tmp_path / "ab", "ab", "antibody", 5),
+            _descriptor(tmp_path / "ag", "ag", "antigen", 7),
+        )
+
+
+def test_deep_depths_reuse_the_same_scalar_scorer_shape(tmp_path: Path):
+    antibody = _descriptor(tmp_path / "ab", "ab", "antibody", 5)
+    antigen = _descriptor(tmp_path / "ag", "ag", "antigen", 7)
+    models = [
+        build_ranker(
+            _model_config(tmp_path, "deep_cross_attention", num_layers),
+            antibody,
+            antigen,
+        )
+        for num_layers in (4, 8, 16)
+    ]
+
+    signatures = [
+        {name: tuple(value.shape) for name, value in model.scoring_head.state_dict().items()}
+        for model in models
+    ]
+    assert signatures[0] == signatures[1] == signatures[2]

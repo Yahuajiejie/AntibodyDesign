@@ -139,6 +139,81 @@ def test_load_config_parses_v065_cached_concat_model(tmp_path, existing_train_pa
     assert config.model.objective.sigma == pytest.approx(2.0)
 
 
+def _deep_cached_model(tmp_path: Path, num_layers: int) -> dict[str, object]:
+    antibody_cache = tmp_path / "deep-ab-cache"
+    antigen_cache = tmp_path / "deep-ag-cache"
+    antibody_cache.mkdir(exist_ok=True)
+    antigen_cache.mkdir(exist_ok=True)
+    encoder_common = {
+        "mode": "frozen_cached",
+        "embedding_layer": -1,
+        "max_length": None,
+        "long_sequence_strategy": "error",
+    }
+    return {
+        "antibody_encoder": {
+            **encoder_common,
+            "name": "igbert",
+            "revision": "ab-rev-1",
+            "tokenizer_revision": "ab-tokenizer-1",
+            "cache_dir": str(antibody_cache),
+        },
+        "antigen_encoder": {
+            **encoder_common,
+            "name": "esm2",
+            "revision": "ag-rev-1",
+            "tokenizer_revision": "ag-tokenizer-1",
+            "cache_dir": str(antigen_cache),
+        },
+        "interaction": {
+            "kind": "deep_cross_attention",
+            "d_model": 16,
+            "num_layers": num_layers,
+            "num_heads": 4,
+            "ffn_multiplier": 4.0,
+            "dropout": 0.1,
+            "pooling": "masked_mean",
+            "bidirectional": True,
+        },
+        "objective": {
+            "name": "pairwise_ranknet",
+            "temperature": 1.0,
+            "sigma": 1.0,
+            "pointwise_loss": "huber",
+        },
+    }
+
+
+@pytest.mark.parametrize("num_layers", [4, 8, 16])
+def test_load_config_accepts_supported_deep_depths(
+    tmp_path, existing_train_path, num_layers
+):
+    config_path = _write_config(
+        tmp_path,
+        {"model": _deep_cached_model(tmp_path, num_layers)},
+        train_path=existing_train_path,
+    )
+
+    config = load_config(config_path)
+
+    assert config.model.interaction.kind == "deep_cross_attention"
+    assert config.model.interaction.num_layers == num_layers
+
+
+@pytest.mark.parametrize("num_layers", [0, 1, 2, 15])
+def test_load_config_rejects_unsupported_deep_depths(
+    tmp_path, existing_train_path, num_layers
+):
+    config_path = _write_config(
+        tmp_path,
+        {"model": _deep_cached_model(tmp_path, num_layers)},
+        train_path=existing_train_path,
+    )
+
+    with pytest.raises(ValueError, match=r"num_layers in \{4, 8, 16\}"):
+        load_config(config_path)
+
+
 def test_cached_config_rejects_floating_revision(tmp_path, existing_train_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()

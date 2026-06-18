@@ -24,6 +24,11 @@ def build_ranker(
         expected_sequence_type="antibody",
     )
     interaction = model_config.interaction
+    if (
+        interaction.kind == "deep_cross_attention"
+        and interaction.num_layers not in {4, 8, 16}
+    ):
+        raise ValueError("deep_cross_attention build_ranker requires 4, 8, or 16 layers")
     if interaction.kind == "antibody_only":
         if antigen_cache is not None:
             raise ValueError("antibody_only build_ranker does not accept an antigen cache")

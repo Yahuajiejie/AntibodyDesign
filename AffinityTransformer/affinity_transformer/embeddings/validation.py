@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -33,6 +33,10 @@ class CacheDescriptor:
     n_items: int
     required_count: int
     covered_count: int
+    sequence_length_summary: Mapping[str, float] = field(default_factory=dict)
+    embedding_length_summary: Mapping[str, float] = field(default_factory=dict)
+    truncated_count: int = 0
+    truncation_rate: float = 0.0
 
     @property
     def coverage(self) -> float:
@@ -95,8 +99,12 @@ def validate_embedding_cache(
     _require_single_manifest_value(selected, "encoder_revision", encoder_config.revision)
     embedding_dim = _require_positive_single_int(selected, "embedding_dim")
     dtype = _require_single_text(selected, "dtype")
-    if (pd.to_numeric(selected["embedding_length"], errors="coerce") < 1).any():
-        raise ValueError("embedding manifest contains non-positive embedding_length")
+    sequence_lengths = pd.to_numeric(selected["sequence_length"], errors="coerce")
+    embedding_lengths = pd.to_numeric(selected["embedding_length"], errors="coerce")
+    if sequence_lengths.isna().any() or (sequence_lengths < 1).any():
+        raise ValueError("embedding manifest contains invalid sequence_length")
+    if embedding_lengths.isna().any() or (embedding_lengths < 1).any():
+        raise ValueError("embedding manifest contains invalid embedding_length")
 
     available = set(selected["sequence_hash"].astype(str))
     required = set(str(value) for value in required_sequence_hashes)
@@ -123,6 +131,15 @@ def validate_embedding_cache(
                 f"{actual_dtype} != {dtype}"
             )
 
+    measured = (
+        selected
+        if not required
+        else selected[selected["sequence_hash"].astype(str).isin(required)]
+    )
+    measured_sequence_lengths = pd.to_numeric(measured["sequence_length"])
+    measured_embedding_lengths = pd.to_numeric(measured["embedding_length"])
+    truncated_count = int((measured_embedding_lengths < measured_sequence_lengths).sum())
+
     canonical_metadata = json.dumps(metadata, sort_keys=True, separators=(",", ":"), default=str)
     return CacheDescriptor(
         cache_dir=cache_dir,
@@ -138,6 +155,10 @@ def validate_embedding_cache(
         n_items=len(selected),
         required_count=len(required),
         covered_count=len(required),
+        sequence_length_summary=_length_summary(measured_sequence_lengths),
+        embedding_length_summary=_length_summary(measured_embedding_lengths),
+        truncated_count=truncated_count,
+        truncation_rate=truncated_count / len(measured),
     )
 
 
@@ -201,3 +222,12 @@ def _require_single_text(table: pd.DataFrame, field: str) -> str:
     if len(values) != 1:
         raise ValueError(f"embedding manifest requires one {field}, got {sorted(values)}")
     return next(iter(values))
+
+
+def _length_summary(values: pd.Series) -> dict[str, float]:
+    return {
+        "p50": float(values.quantile(0.50)),
+        "p90": float(values.quantile(0.90)),
+        "p95": float(values.quantile(0.95)),
+        "max": float(values.max()),
+    }

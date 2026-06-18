@@ -69,6 +69,10 @@ def test_validate_embedding_cache_returns_model_construction_facts(tmp_path: Pat
     assert descriptor.dtype == "float32"
     assert descriptor.coverage == 1.0
     assert len(descriptor.metadata_hash) == 64
+    assert descriptor.sequence_length_summary == {
+        "p50": 3.0, "p90": 3.0, "p95": 3.0, "max": 3.0
+    }
+    assert descriptor.truncation_rate == 0.0
 
 
 def test_validate_embedding_cache_rejects_revision_mismatch(tmp_path: Path):
@@ -103,3 +107,23 @@ def test_validate_embedding_cache_reads_required_shards_before_training(tmp_path
             "antibody",
             ["required-hash"],
         )
+
+
+def test_validate_embedding_cache_reports_truncation_for_required_items(tmp_path: Path):
+    cache_dir = tmp_path / "cache"
+    _write_cache(cache_dir, shape=(2, 5))
+    manifest_path = cache_dir / "manifest.csv"
+    manifest = pd.read_csv(manifest_path)
+    manifest["embedding_length"] = 2
+    manifest.to_csv(manifest_path, index=False)
+
+    descriptor = validate_embedding_cache(
+        cache_dir,
+        _encoder(cache_dir),
+        "antibody",
+        ["required-hash"],
+    )
+
+    assert descriptor.embedding_length_summary["max"] == 2.0
+    assert descriptor.truncated_count == 1
+    assert descriptor.truncation_rate == 1.0

@@ -150,5 +150,20 @@ def test_config_cache_factory_and_embedding_trainer_form_one_closed_loop(tmp_pat
 
     trainer.fit()
 
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    trainer.save_checkpoint(checkpoint_path)
+    reloaded_model = build_ranker(config.model, antibody_descriptor, antigen_descriptor)
+    reloaded_trainer = Trainer(
+        model=reloaded_model,
+        config=config,
+        train_dataloader=[train_batch],
+        embedding_metadata_hashes={
+            "antibody": antibody_descriptor.metadata_hash,
+            "antigen": antigen_descriptor.metadata_hash,
+        },
+    )
+    reloaded_trainer.load_checkpoint(checkpoint_path)
+
     assert trainer.global_step == 1
     assert "valid_weighted_spearman" in trainer.history[-1]
+    assert reloaded_trainer.global_step == trainer.global_step

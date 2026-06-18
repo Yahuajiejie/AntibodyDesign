@@ -37,31 +37,57 @@ def test_antibody_only_scores_embedding_batch_without_base_encoder():
     assert not any("encoder" in name for name, _ in model.named_parameters())
 
 
-def test_concat_supports_different_antibody_and_antigen_dimensions():
+@pytest.mark.parametrize("pooling", ["masked_mean", "attention_pool"])
+def test_concat_supports_independent_dims_pooling_and_backward(pooling):
     model = EmbeddingAffinityRanker(
         antibody_input_dim=5,
         antigen_input_dim=7,
         d_model=8,
         fusion_kind="concat",
-        pooling="attention_pool",
+        pooling=pooling,
         dropout=0.0,
     )
 
     features = model.forward_features(_batch())
     scores = model(_batch())
+    scores.sum().backward()
 
     assert features.shape == (2, 16)
     assert scores.shape == (2,)
     assert torch.isfinite(scores).all()
+    assert model.interaction is None
+    assert not any("encoder" in name for name, _ in model.named_parameters())
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
+    assert gradients
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
-def test_deep_cross_attention_handles_mixed_missing_antigen_rows():
+def test_concat_uses_zero_antigen_representation_for_missing_antigen():
+    model = EmbeddingAffinityRanker(
+        antibody_input_dim=5,
+        antigen_input_dim=7,
+        d_model=8,
+        fusion_kind="concat",
+        pooling="masked_mean",
+        dropout=0.0,
+    )
+
+    mixed_features = model.forward_features(_batch())
+    all_missing_scores = model(_batch(include_antigen=False))
+
+    torch.testing.assert_close(mixed_features[1, 8:], torch.zeros(8))
+    assert all_missing_scores.shape == (2,)
+    assert torch.isfinite(all_missing_scores).all()
+
+
+@pytest.mark.parametrize("num_layers", [4, 8, 16])
+def test_deep_cross_attention_handles_mixed_missing_antigen_rows(num_layers):
     model = EmbeddingAffinityRanker(
         antibody_input_dim=5,
         antigen_input_dim=7,
         d_model=8,
         fusion_kind="deep_cross_attention",
-        num_layers=4,
+        num_layers=num_layers,
         num_heads=2,
         dropout=0.0,
     )
