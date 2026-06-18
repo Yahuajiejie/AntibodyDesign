@@ -28,16 +28,16 @@ if [[ "${SKIP_G00:-0}" == "1" ]]; then
   done
 fi
 
-setup="$(sbatch --parsable scripts/slurm/setup_affitest_env.sbatch)"
-echo "submitted setup: ${setup}"
+# Run env setup synchronously on the login node (compute nodes have no internet).
+echo "[SETUP] Creating conda env on login node..."
+bash scripts/slurm/setup_affitest_env.sh
+echo "[SETUP] Done."
 
 smoke="$(sbatch --parsable \
-  --dependency="afterok:${setup}" \
   scripts/slurm/smoke_test.sbatch)"
 echo "submitted code smoke: ${smoke}"
 
 models="$(sbatch --parsable \
-  --dependency="afterok:${setup}" \
   --export="ALL,REVISION_FILE=${REVISION_FILE}" \
   scripts/slurm/check_v065_models.sbatch)"
 echo "submitted model cache check: ${models}"
@@ -87,7 +87,7 @@ echo "submitted deep16 after deep8: ${deep16}"
 
 echo ""
 echo "v0.65 chain submitted"
-echo "  setup=${setup}"
+echo "  setup=login-node (synchronous)"
 echo "  smoke=${smoke}"
 echo "  models=${models}"
 echo "  cache=${cache}"
