@@ -17,13 +17,13 @@ export HF_DATASETS_OFFLINE=0
 echo "HF_HOME=${HF_HOME}"
 
 python - <<'PY'
-from transformers import AutoModel, AutoTokenizer
+from huggingface_hub import snapshot_download
 
 repos = ["facebook/esm2_t12_35M_UR50D"]
 for repo in repos:
     print(f"downloading {repo} ...")
-    AutoTokenizer.from_pretrained(repo)
-    AutoModel.from_pretrained(repo)
+    snapshot_path = snapshot_download(repo_id=repo)
+    print(f"  snapshot={snapshot_path}")
     print(f"  ok: {repo}")
 print("ESM2 download complete. You can now submit the SLURM job chain.")
 PY

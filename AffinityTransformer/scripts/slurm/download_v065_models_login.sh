@@ -18,14 +18,11 @@ echo "HF_HOME=${HF_HOME}"
 echo "revision_file=${REVISION_FILE}"
 
 REVISION_FILE="${REVISION_FILE}" python - <<'PY'
-import gc
 import os
 from pathlib import Path
 
-import torch
 import yaml
-from huggingface_hub import HfApi
-from transformers import AutoModel, AutoTokenizer
+from huggingface_hub import HfApi, snapshot_download
 
 models = {
     "antibody": os.environ.get("IGBERT_MODEL", "Exscientia/IgBert"),
@@ -42,18 +39,13 @@ for role, repo in models.items():
     if not revision or revision.lower() in {"main", "master", "latest"}:
         raise SystemExit(f"failed to resolve immutable revision for {repo}: {revision!r}")
     print(f"downloading {role}: {repo}@{revision}")
-    tokenizer = AutoTokenizer.from_pretrained(repo, revision=revision)
-    model = AutoModel.from_pretrained(repo, revision=revision)
-    tokenizer_revision = tokenizer.init_kwargs.get("_commit_hash") or revision
+    snapshot_path = snapshot_download(repo_id=repo, revision=revision)
+    print(f"  snapshot={snapshot_path}")
     result[role] = {
         "model_name": repo,
         "model_revision": revision,
-        "tokenizer_revision": tokenizer_revision,
+        "tokenizer_revision": revision,
     }
-    del tokenizer, model
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 path = Path(os.environ["REVISION_FILE"])
 path.write_text(yaml.safe_dump(result, sort_keys=False), encoding="utf-8")
