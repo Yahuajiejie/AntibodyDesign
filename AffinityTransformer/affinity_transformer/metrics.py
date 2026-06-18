@@ -6,7 +6,7 @@ This module only computes metrics from a `predictions` table that already
 has one row per `(record_id, group_id)` with a model `score` and the
 dataset's `rank_label`. It does not read raw CSVs, does not build
 pairs/groups (that is `dataset.py`, spec §5.2), and does not run the model
-(that is `model.py` / `trainer.py`).
+(that is `model/` / `trainer.py`).
 
 Spearman correlation is computed without `scipy` (unavailable in this
 sandbox): Spearman's rho is the Pearson correlation of the ranks, so

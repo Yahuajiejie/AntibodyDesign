@@ -26,8 +26,8 @@ from affinity_transformer.dataset import (
     filter_trainable_records,
     load_records,
 )
-from affinity_transformer.losses import ranknet_loss
 from affinity_transformer.model import AffinityRanker
+from affinity_transformer.model.losses import ranknet_loss
 from affinity_transformer.trainer import Trainer
 
 D_MODEL = 16

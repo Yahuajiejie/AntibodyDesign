@@ -1,4 +1,4 @@
-"""Tests for affinity_transformer.losses (spec §5.5)."""
+"""Tests for affinity_transformer.model.losses (spec v0.65 §5.5)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import math
 import pytest
 import torch
 
-from affinity_transformer.losses import ranknet_loss
+from affinity_transformer.model.losses import ranknet_loss
 
 
 def test_ranknet_loss_rewards_correct_ordering():

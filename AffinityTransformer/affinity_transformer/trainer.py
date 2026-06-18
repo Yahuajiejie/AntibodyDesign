@@ -9,7 +9,7 @@ build pairs or groups (that is `dataset.py`, spec §5.2), and does not run
 calls it.
 
 The "string -> concrete model/tokenizer object" mapping that v0.4 deferred
-from `dataloader.py`/`model.py` lives at the bottom of this module:
+from `dataloader.py`/`model/` lives at the bottom of this module:
 `build_model_and_tokenizers` (currently ESM2-only).
 """
 
@@ -26,9 +26,9 @@ from torch.utils.data import DataLoader
 
 from .config import Config, ModelConfig
 from .dataloader import PairBatch, RankBatch, Tokenizer
-from .losses import ranknet_loss
 from .metrics import compute_group_spearman, summarize_group_spearman
 from .model import AffinityRanker
+from .model.losses import ranknet_loss
 from .utils import ensure_dir, get_logger, set_seed
 
 _logger = get_logger(__name__)
@@ -547,7 +547,7 @@ def build_model_and_tokenizers(
     """Build a real `AffinityRanker` + tokenizers from a `ModelConfig` (spec §5.7).
 
     This is the "string -> concrete model/tokenizer object" mapping that
-    v0.4 deferred from `dataloader.py`/`model.py` to `trainer.py`. It is the
+    v0.4 deferred from `dataloader.py`/`model/` to `trainer.py`. It is the
     only place in `affinity_transformer` that imports `transformers` or
     downloads pretrained weights, and that import happens inside this
     function body (not at module import time), per spec §9 "禁止在 import

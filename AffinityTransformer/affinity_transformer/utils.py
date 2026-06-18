@@ -6,7 +6,7 @@ Only genuinely dataset-agnostic, model-agnostic helpers belong here: seeding,
 hashing, amino-acid alphabet checks, directory creation, and a thin logging
 setup. Do not add raw-table column names, label-transform rules, or model
 logic to this module (spec §5.9 "禁止" list) -- those belong to the data-prep
-scripts, `dataset.py`, and `model.py`/`trainer.py` respectively.
+scripts, `dataset/`, and `model/`/`trainer.py` respectively.
 """
 
 from __future__ import annotations
