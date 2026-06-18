@@ -17,7 +17,7 @@ model:
   use_cross_attention: true
 
 train:
-  batch_size: 16
+  batch_size: 256
   lr: 1.0e-4
   epochs: 10
-  device: cpu
+  device: cuda
