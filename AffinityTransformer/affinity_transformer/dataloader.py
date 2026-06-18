@@ -273,3 +273,13 @@ def collate_pair_batch(
     y_ij = torch.tensor([example.y_ij for example in examples], dtype=torch.float32)
 
     return PairBatch(left=left, right=right, y_ij=y_ij)
+
+
+# Embedding-backed collators are implemented in the dedicated component but
+# re-exported here so callers can treat this module as the batching API.
+from .embeddings.collate import (  # noqa: E402
+    EmbeddingBatch,
+    PairEmbeddingBatch,
+    collate_embedding_batch,
+    collate_pair_embedding_batch,
+)
