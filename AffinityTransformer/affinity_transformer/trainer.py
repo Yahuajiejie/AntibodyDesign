@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Mapping
 
@@ -38,6 +39,23 @@ from .model.losses import ranknet_loss
 from .utils import ensure_dir, get_logger, set_seed
 
 _logger = get_logger(__name__)
+
+
+def _fmt_seconds(s: float) -> str:
+    """Format elapsed seconds as HH:MM:SS."""
+    s = int(s)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+def _try_len(loader) -> int | None:
+    """Return len(loader) if available, else None (IterableDataset)."""
+    try:
+        return len(loader)
+    except TypeError:
+        return None
+
 
 #: Columns required on `valid_record_metadata` (spec §5.6 input fields not
 #: already carried by `RankBatch`: `dataset_id` and `label_kind`).
@@ -148,6 +166,8 @@ class Trainer:
         early_stopping_patience: int | None = None,
         early_stopping_metric: str = "valid_weighted_spearman",
         embedding_metadata_hashes: Mapping[str, str] | None = None,
+        log_every_n_steps: int = 50,
+        eval_log_every_n_batches: int = 100,
     ) -> None:
         """Build a `Trainer` around an already-constructed model.
 
@@ -217,6 +237,8 @@ class Trainer:
 
         self.global_step = 0
         self.history: list[dict[str, float]] = []
+        self.log_every_n_steps = log_every_n_steps
+        self.eval_log_every_n_batches = eval_log_every_n_batches
 
     def fit(self) -> None:
         """Run the full training loop (spec §5.7 rules 3 and 6).
@@ -254,16 +276,24 @@ class Trainer:
         epochs_without_improvement = 0
 
         for epoch in range(1, self.config.train.epochs + 1):
+            t_epoch = time.time()
             train_loss = self._run_train_epoch(epoch)
             summary: dict[str, float] = {"epoch": float(epoch), "train_loss": train_loss}
 
             valid_metrics: dict[str, float] = {}
             if self.valid_dataloader is not None:
-                valid_metrics = self.evaluate(self.valid_dataloader)
+                valid_metrics = self.evaluate(self.valid_dataloader, epoch=epoch)
                 summary.update(valid_metrics)
 
+            epoch_time = time.time() - t_epoch
+            summary["epoch_time_s"] = epoch_time
             self.history.append(summary)
-            _logger.info("epoch %d: %s", epoch, summary)
+            _logger.info("epoch %d  time=%s: %s", epoch, _fmt_seconds(epoch_time), summary)
+
+            if self.output_dir is not None:
+                ckpt_path = self.output_dir / "checkpoint_latest.pt"
+                self.save_checkpoint(ckpt_path)
+                _logger.info("epoch %d: checkpoint → %s", epoch, ckpt_path)
 
             if self.early_stopping_patience is not None and self.valid_dataloader is not None:
                 if self.early_stopping_metric not in valid_metrics:
@@ -312,6 +342,8 @@ class Trainer:
             )
         total_loss = 0.0
         n_batches = 0
+        total_batches = _try_len(self.train_dataloader)
+        t0 = time.time()
 
         for batch in self.train_dataloader:
             batch = _move_pair_batch(batch, self.device)
@@ -338,6 +370,17 @@ class Trainer:
             self.global_step += 1
             total_loss += loss.item()
             n_batches += 1
+
+            if n_batches % self.log_every_n_steps == 0:
+                elapsed = time.time() - t0
+                step_str = (
+                    f"{n_batches}/{total_batches}" if total_batches else str(n_batches)
+                )
+                _logger.info(
+                    "train epoch %d  step %s  loss=%.4f  avg=%.4f  elapsed=%s",
+                    epoch, step_str, loss.item(), total_loss / n_batches,
+                    _fmt_seconds(elapsed),
+                )
 
         if n_batches == 0:
             raise ValueError("train_dataloader produced no batches")
@@ -383,7 +426,7 @@ class Trainer:
             json.dump(context, f, indent=2)
         return path
 
-    def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
+    def evaluate(self, dataloader: DataLoader, epoch: int | None = None) -> dict[str, float]:
         """Compute group-level Spearman metrics over `dataloader` (spec §5.7 rule 3).
 
         Args:
@@ -418,6 +461,10 @@ class Trainer:
 
         self.model.eval()
         rows: list[dict[str, object]] = []
+        n_eval_batches = 0
+        total_eval_batches = _try_len(dataloader)
+        epoch_tag = f"epoch {epoch}  " if epoch is not None else ""
+        t0 = time.time()
         with torch.no_grad():
             for batch in dataloader:
                 batch = _move_record_batch(batch, self.device)
@@ -431,6 +478,18 @@ class Trainer:
                         "rank_label": label,
                         "score": score,
                     })
+                n_eval_batches += 1
+                if n_eval_batches % self.eval_log_every_n_batches == 0:
+                    elapsed = time.time() - t0
+                    step_str = (
+                        f"{n_eval_batches}/{total_eval_batches}"
+                        if total_eval_batches
+                        else str(n_eval_batches)
+                    )
+                    _logger.info(
+                        "eval %sbatch %s  elapsed=%s",
+                        epoch_tag, step_str, _fmt_seconds(elapsed),
+                    )
 
         if not rows:
             raise ValueError("dataloader produced no examples")
