@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+import logging
 from pathlib import Path
 from typing import Mapping, Protocol
 
@@ -10,6 +10,8 @@ import pandas as pd
 import torch
 
 from .schema import EmbeddingItem, SequenceType
+
+_logger = logging.getLogger(__name__)
 
 MANIFEST_COLUMNS = (
     "sequence_hash",
@@ -66,11 +68,14 @@ class InMemoryEmbeddingStore:
 
 
 class ShardedEmbeddingStore:
-    """Lazy reader for manifest-indexed ``torch.save`` embedding shards."""
+    """Eagerly loads all manifest-indexed embedding shards into memory at init.
 
-    def __init__(self, manifest_path: Path, max_cached_shards: int = 2) -> None:
-        if max_cached_shards < 1:
-            raise ValueError("max_cached_shards must be >= 1")
+    All shards are loaded and validated once during construction so that
+    training DataLoader workers (forked after init) access embeddings via
+    pure in-memory dict lookup with no disk I/O on the hot path.
+    """
+
+    def __init__(self, manifest_path: Path) -> None:
         self.manifest_path = Path(manifest_path)
         if not self.manifest_path.exists():
             raise FileNotFoundError(f"embedding manifest not found: {self.manifest_path}")
@@ -79,72 +84,72 @@ class ShardedEmbeddingStore:
         if missing:
             raise ValueError(f"embedding manifest is missing required column(s): {missing}")
 
-        self._rows: dict[tuple[str, str], dict[str, object]] = {}
+        # Group manifest rows by shard path so each shard file is loaded once.
+        shard_to_rows: dict[Path, list[dict[str, object]]] = {}
         for row in manifest.to_dict(orient="records"):
             sequence_type = str(row["sequence_type"])
             if sequence_type not in {"antibody", "antigen"}:
                 raise ValueError(f"invalid manifest sequence_type: {sequence_type!r}")
-            key = (sequence_type, str(row["sequence_hash"]))
-            if key in self._rows:
-                raise ValueError(f"duplicate embedding manifest key: {key}")
-            self._rows[key] = row
+            shard_path = Path(str(row["shard_path"]))
+            if not shard_path.is_absolute():
+                shard_path = self.manifest_path.parent / shard_path
+            shard_to_rows.setdefault(shard_path, []).append(row)
 
-        self._max_cached_shards = max_cached_shards
-        self._shards: OrderedDict[Path, Mapping[str, object]] = OrderedDict()
+        self._items: dict[tuple[str, str], EmbeddingItem] = {}
+        for shard_path, rows in shard_to_rows.items():
+            if not shard_path.exists():
+                raise FileNotFoundError(f"embedding shard not found: {shard_path}")
+            try:
+                shard = torch.load(shard_path, map_location="cpu", weights_only=True)
+            except TypeError:
+                shard = torch.load(shard_path, map_location="cpu")
+            if not isinstance(shard, Mapping):
+                raise ValueError(f"embedding shard must contain a mapping: {shard_path}")
+            for row in rows:
+                sequence_type = str(row["sequence_type"])
+                sequence_hash = str(row["sequence_hash"])
+                item_key = str(row["item_key"])
+                if item_key not in shard:
+                    raise EmbeddingNotFoundError(
+                        f"item_key {item_key!r} is absent from embedding shard {shard_path}"
+                    )
+                item = _coerce_item(shard[item_key])
+                expected_dim = int(row["embedding_dim"])
+                expected_length = int(row["embedding_length"])
+                if item.values.shape != (expected_length, expected_dim):
+                    raise ValueError(
+                        f"embedding shape mismatch for ({sequence_type}, {sequence_hash}): "
+                        f"manifest ({expected_length}, {expected_dim}), "
+                        f"shard {tuple(item.values.shape)}"
+                    )
+                expected_dtype = str(row["dtype"])
+                actual_dtype = str(item.values.dtype).removeprefix("torch.")
+                if actual_dtype != expected_dtype:
+                    raise ValueError(
+                        f"embedding dtype mismatch for ({sequence_type}, {sequence_hash}): "
+                        f"manifest {expected_dtype}, shard {actual_dtype}"
+                    )
+                key = (sequence_type, sequence_hash)
+                if key in self._items:
+                    raise ValueError(f"duplicate embedding manifest key: {key}")
+                self._items[key] = item
+
+        _logger.info(
+            "ShardedEmbeddingStore: loaded %d embeddings from %d shards (%s)",
+            len(self._items),
+            len(shard_to_rows),
+            self.manifest_path,
+        )
 
     def get(self, sequence_hash: str, sequence_type: SequenceType) -> EmbeddingItem:
-        """Load one item, retaining a small per-process shard LRU cache."""
-        key = (sequence_type, sequence_hash)
-        row = self._rows.get(key)
-        if row is None:
+        """Return one item from the in-memory store (O(1) dict lookup, no I/O)."""
+        item = self._items.get((sequence_type, sequence_hash))
+        if item is None:
             raise EmbeddingNotFoundError(
                 f"missing {sequence_type} embedding for sequence_hash={sequence_hash} "
                 f"in {self.manifest_path}"
             )
-
-        shard_path = Path(str(row["shard_path"]))
-        if not shard_path.is_absolute():
-            shard_path = self.manifest_path.parent / shard_path
-        shard = self._load_shard(shard_path)
-        item_key = str(row["item_key"])
-        if item_key not in shard:
-            raise EmbeddingNotFoundError(
-                f"item_key {item_key!r} is absent from embedding shard {shard_path}"
-            )
-        item = _coerce_item(shard[item_key])
-        expected_dim = int(row["embedding_dim"])
-        expected_length = int(row["embedding_length"])
-        if item.values.shape != (expected_length, expected_dim):
-            raise ValueError(
-                f"embedding shape mismatch for {key}: manifest "
-                f"({expected_length}, {expected_dim}), shard {tuple(item.values.shape)}"
-            )
-        expected_dtype = str(row["dtype"])
-        actual_dtype = str(item.values.dtype).removeprefix("torch.")
-        if actual_dtype != expected_dtype:
-            raise ValueError(
-                f"embedding dtype mismatch for {key}: manifest {expected_dtype}, "
-                f"shard {actual_dtype}"
-            )
         return item
-
-    def _load_shard(self, path: Path) -> Mapping[str, object]:
-        if path in self._shards:
-            shard = self._shards.pop(path)
-            self._shards[path] = shard
-            return shard
-        if not path.exists():
-            raise FileNotFoundError(f"embedding shard not found: {path}")
-        try:
-            shard = torch.load(path, map_location="cpu", weights_only=True)
-        except TypeError:
-            shard = torch.load(path, map_location="cpu")
-        if not isinstance(shard, Mapping):
-            raise ValueError(f"embedding shard must contain a mapping: {path}")
-        self._shards[path] = shard
-        while len(self._shards) > self._max_cached_shards:
-            self._shards.popitem(last=False)
-        return shard
 
 
 def _read_manifest(path: Path) -> pd.DataFrame:

@@ -65,5 +65,6 @@ def test_sharded_store_rejects_manifest_shape_mismatch(tmp_path: Path):
     manifest_path = tmp_path / "manifest.csv"
     manifest.to_csv(manifest_path, index=False)
 
+    # Shape validation now happens at __init__ (eager preload), not at get().
     with pytest.raises(ValueError, match="shape mismatch"):
-        ShardedEmbeddingStore(manifest_path).get("hash", "antibody")
+        ShardedEmbeddingStore(manifest_path)
