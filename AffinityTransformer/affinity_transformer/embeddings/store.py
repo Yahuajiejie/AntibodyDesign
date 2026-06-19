@@ -100,9 +100,12 @@ class ShardedEmbeddingStore:
             if not shard_path.exists():
                 raise FileNotFoundError(f"embedding shard not found: {shard_path}")
             try:
-                shard = torch.load(shard_path, map_location="cpu", weights_only=True)
+                shard = torch.load(shard_path, map_location="cpu", weights_only=True, mmap=True)
             except TypeError:
-                shard = torch.load(shard_path, map_location="cpu")
+                try:
+                    shard = torch.load(shard_path, map_location="cpu", weights_only=True)
+                except TypeError:
+                    shard = torch.load(shard_path, map_location="cpu")
             if not isinstance(shard, Mapping):
                 raise ValueError(f"embedding shard must contain a mapping: {shard_path}")
             for row in rows:
