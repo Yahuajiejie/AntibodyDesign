@@ -7,10 +7,10 @@ data:
   split_dir: null
   valid_fraction: 0.1
   test_fraction: 0.1
-  max_pairs_per_group: 200
-  pair_sample_strategy: absolute_cap
-  pair_fraction: null
-  min_pairs_per_group: 1
+  max_pairs_per_group: 2000
+  pair_sample_strategy: capped_proportional
+  pair_fraction: 0.01
+  min_pairs_per_group: 200
   seed: 0
 
 model:

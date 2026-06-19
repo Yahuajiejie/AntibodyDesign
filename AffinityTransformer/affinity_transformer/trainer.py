@@ -514,6 +514,14 @@ class Trainer:
             )
 
         group_metrics = compute_group_spearman(predictions)
+        if self.output_dir is not None:
+            epoch_suffix = f"_epoch{epoch}" if epoch is not None else ""
+            group_metrics_path = (
+                ensure_dir(self.output_dir) / f"valid_group_metrics{epoch_suffix}.csv"
+            )
+            group_metrics.sort_values("n_records", ascending=False).to_csv(
+                group_metrics_path, index=False
+            )
         summary = summarize_group_spearman(group_metrics)
         return _flatten_spearman_summary(summary)
 
