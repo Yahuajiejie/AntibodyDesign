@@ -11,6 +11,7 @@ from affinity_transformer.config import load_config
 from affinity_transformer.training import (
     resolve_data_paths,
     run_cached_ranknet,
+    run_group_kfold_cross_validation,
     run_online_training,
 )
 from affinity_transformer.utils import ensure_dir
@@ -31,13 +32,21 @@ def run_training(config_path: Path, output_dir: Path) -> dict[str, float]:
     """Load one experiment and dispatch to its explicit execution mode."""
     config = load_config(config_path)
     output_dir = ensure_dir(output_dir)
-    train_path, valid_path, test_path = resolve_data_paths(config)
 
     runner = (
         run_cached_ranknet
         if config.model.antibody_encoder.mode == "frozen_cached"
         else run_online_training
     )
+    if config.cross_validation.enabled:
+        return run_group_kfold_cross_validation(
+            config_path,
+            config,
+            output_dir,
+            runner,
+        )
+
+    train_path, valid_path, test_path = resolve_data_paths(config)
     return runner(
         config_path,
         config,

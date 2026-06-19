@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from affinity_transformer.splits import build_splits
+from affinity_transformer.splits import build_group_kfolds, build_splits
 
 
 def test_debug_record_split_has_no_record_id_leakage(toy_records):
@@ -89,6 +89,53 @@ def test_build_splits_rejects_unknown_strategy(toy_records):
         build_splits(toy_records, "bad_strategy", 0.2, 0.2, seed=0)
     except ValueError as exc:
         assert "strategy" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_group_kfolds_have_no_leakage_and_cover_each_record_once():
+    records = pd.DataFrame(
+        _split_row(f"group_{group}/{index}", f"group_{group}", f"study/{group}")
+        for group in range(7)
+        for index in range(group + 1)
+    )
+
+    folds = build_group_kfolds(records, n_splits=3, seed=17)
+
+    assert len(folds) == 3
+    validation_ids = []
+    for fold in folds:
+        train_groups = set(fold.train["group_id"])
+        valid_groups = set(fold.valid["group_id"])
+        assert train_groups.isdisjoint(valid_groups)
+        validation_ids.extend(fold.valid["record_id"].tolist())
+    assert sorted(validation_ids) == sorted(records["record_id"].tolist())
+
+
+def test_group_kfolds_are_deterministic_for_seed():
+    records = pd.DataFrame(
+        _split_row(f"record_{group}", f"group_{group}", f"study/{group}")
+        for group in range(8)
+    )
+
+    first = build_group_kfolds(records, n_splits=4, seed=9)
+    second = build_group_kfolds(records.sample(frac=1.0), n_splits=4, seed=9)
+
+    assert [set(fold.valid["group_id"]) for fold in first] == [
+        set(fold.valid["group_id"]) for fold in second
+    ]
+
+
+def test_group_kfolds_reject_more_folds_than_groups():
+    records = pd.DataFrame([
+        _split_row("record_a", "group_a", "study/a"),
+        _split_row("record_b", "group_b", "study/b"),
+    ])
+
+    try:
+        build_group_kfolds(records, n_splits=3, seed=0)
+    except ValueError as exc:
+        assert "exceeds the number of groups" in str(exc)
     else:
         raise AssertionError("Expected ValueError")
 

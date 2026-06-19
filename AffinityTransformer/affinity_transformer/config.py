@@ -176,6 +176,22 @@ class TrainConfig:
     pin_memory: bool = False
 
 
+@dataclass(frozen=True)
+class CrossValidationConfig:
+    """Group-isolated K-fold cross-validation settings.
+
+    ``source`` selects the development pool: ``train`` uses only
+    ``data.train_path`` while ``train_valid`` combines the configured train
+    and validation tables.  ``data.test_path`` is never evaluated inside
+    cross-validation and remains an untouched final holdout.
+    """
+
+    enabled: bool = False
+    n_splits: int = 5
+    source: str = "train"
+    seed: int = 0
+
+
 @dataclass
 class Config:
     """Top-level configuration for one training run.
@@ -189,6 +205,7 @@ class Config:
     data: DataConfig
     model: ModelConfig
     train: TrainConfig
+    cross_validation: CrossValidationConfig = field(default_factory=CrossValidationConfig)
 
 
 _DATA_REQUIRED_KEYS = ("train_path", "valid_path", "max_pairs_per_group", "seed")
@@ -200,6 +217,7 @@ _LONG_SEQUENCE_STRATEGIES = {"error", "truncate", "chunk"}
 _INTERACTION_KINDS = {"antibody_only", "concat", "deep_cross_attention"}
 _POOLING_KINDS = {"masked_mean", "attention_pool"}
 _OBJECTIVES = {"pointwise", "pairwise_ranknet", "listwise_listnet"}
+_CROSS_VALIDATION_SOURCES = {"train", "train_valid"}
 
 
 def load_config(path: Path) -> Config:
@@ -235,8 +253,62 @@ def load_config(path: Path) -> Config:
     data_cfg = _build_data_config(_require_section(raw, "data"))
     model_cfg = _build_model_config(_require_section(raw, "model"))
     train_cfg = _build_train_config(_require_section(raw, "train"))
+    cross_validation_cfg = _build_cross_validation_config(
+        raw.get("cross_validation"), data_cfg
+    )
 
-    return Config(data=data_cfg, model=model_cfg, train=train_cfg)
+    return Config(
+        data=data_cfg,
+        model=model_cfg,
+        train=train_cfg,
+        cross_validation=cross_validation_cfg,
+    )
+
+
+def _build_cross_validation_config(
+    section: Any,
+    data_config: DataConfig,
+) -> CrossValidationConfig:
+    """Parse and validate the optional group K-fold section."""
+    if section is None:
+        return CrossValidationConfig()
+    if not isinstance(section, dict):
+        raise ValueError("Config section 'cross_validation' must be a mapping")
+
+    enabled_raw = section.get("enabled", False)
+    if not isinstance(enabled_raw, bool):
+        raise ValueError("cross_validation.enabled must be true or false")
+    enabled = enabled_raw
+    n_splits = int(section.get("n_splits", 5))
+    source = str(section.get("source", "train"))
+    seed = int(section.get("seed", data_config.seed))
+
+    if n_splits < 2:
+        raise ValueError("cross_validation.n_splits must be at least 2")
+    if source not in _CROSS_VALIDATION_SOURCES:
+        raise ValueError(
+            "cross_validation.source must be one of "
+            f"{sorted(_CROSS_VALIDATION_SOURCES)}, got {source!r}"
+        )
+    if enabled:
+        if data_config.split_strategy != "none":
+            raise ValueError(
+                "cross-validation requires explicit data paths "
+                "(data.split_strategy='none')"
+            )
+        if data_config.train_path is None:
+            raise ValueError("cross-validation requires data.train_path")
+        if source == "train_valid" and data_config.valid_path is None:
+            raise ValueError(
+                "cross_validation.source='train_valid' requires data.valid_path"
+            )
+
+    return CrossValidationConfig(
+        enabled=enabled,
+        n_splits=n_splits,
+        source=source,
+        seed=seed,
+    )
 
 
 def _require_section(raw: dict[str, Any], name: str) -> dict[str, Any]:

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build formal v0.65 IgBERT/ESM-2 caches and generated training configs."""
+"""Build and validate formal v0.65 IgBERT/ESM-2 embedding caches.
+
+This command never creates or modifies experiment YAML files.  Training
+configuration is human-owned under ``configs/``.
+"""
 
 from __future__ import annotations
 
@@ -32,22 +36,12 @@ def main() -> None:
     parser.add_argument("--split-dir", type=Path, required=True)
     parser.add_argument("--revision-file", type=Path, required=True)
     parser.add_argument("--cache-root", type=Path, required=True)
-    parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dtype", choices=("float16", "float32"), default="float16")
     parser.add_argument("--antibody-max-length", type=int, default=256)
     parser.add_argument("--antigen-max-length", type=int, default=512)
     parser.add_argument("--antibody-shard-size", type=int, default=32)
     parser.add_argument("--antigen-shard-size", type=int, default=4)
-    parser.add_argument("--d-model", type=int, default=256)
-    parser.add_argument("--num-heads", type=int, default=8)
-    parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--lr", type=float, default=1.0e-4)
-    parser.add_argument("--max-pairs-per-group", type=int, default=200)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--pin-memory", action="store_true", default=True)
     args = parser.parse_args()
 
     split_paths = {
@@ -115,112 +109,6 @@ def main() -> None:
         f"validated antigen cache: n={antigen_descriptor.n_items}, "
         f"dim={antigen_descriptor.embedding_dim}, coverage={antigen_descriptor.coverage:.3f}"
     )
-
-    write_training_configs(
-        config_dir=args.config_dir,
-        split_paths=split_paths,
-        antibody_info=antibody_info,
-        antigen_info=antigen_info,
-        antibody_cache=antibody_cache,
-        antigen_cache=antigen_cache,
-        antibody_max_length=args.antibody_max_length,
-        antigen_max_length=args.antigen_max_length,
-        d_model=args.d_model,
-        num_heads=args.num_heads,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
-        lr=args.lr,
-        max_pairs_per_group=args.max_pairs_per_group,
-        seed=args.seed,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_memory,
-    )
-
-
-def write_training_configs(
-    *,
-    config_dir: Path,
-    split_paths: dict[str, Path],
-    antibody_info: dict[str, str],
-    antigen_info: dict[str, str],
-    antibody_cache: Path,
-    antigen_cache: Path,
-    antibody_max_length: int,
-    antigen_max_length: int,
-    d_model: int,
-    num_heads: int,
-    batch_size: int,
-    epochs: int,
-    lr: float,
-    max_pairs_per_group: int,
-    seed: int,
-    num_workers: int = 4,
-    pin_memory: bool = True,
-) -> list[Path]:
-    """Write one Concat and three fixed-depth Deep RankNet configs."""
-    if d_model < 1 or num_heads < 1 or d_model % num_heads != 0:
-        raise ValueError("d_model must be positive and divisible by num_heads")
-    config_dir.mkdir(parents=True, exist_ok=True)
-    common = {
-        "data": {
-            "all_records_path": None,
-            "train_path": str(split_paths["train"]),
-            "valid_path": str(split_paths["valid"]),
-            "test_path": str(split_paths["test"]),
-            "split_strategy": "none",
-            "split_dir": None,
-            "valid_fraction": 0.1,
-            "test_fraction": 0.1,
-            "max_pairs_per_group": max_pairs_per_group,
-            "pair_sample_strategy": "absolute_cap",
-            "pair_fraction": None,
-            "min_pairs_per_group": 1,
-            "seed": seed,
-        },
-        "model": {
-            "antibody_encoder": _encoder_mapping(
-                antibody_info, antibody_cache, antibody_max_length
-            ),
-            "antigen_encoder": _encoder_mapping(
-                antigen_info, antigen_cache, antigen_max_length
-            ),
-            "objective": {
-                "name": "pairwise_ranknet",
-                "temperature": 1.0,
-                "sigma": 1.0,
-                "pointwise_loss": "huber",
-            },
-        },
-        "train": {
-            "batch_size": batch_size,
-            "lr": lr,
-            "epochs": epochs,
-            "device": "cuda",
-            "num_workers": num_workers,
-            "pin_memory": pin_memory,
-        },
-    }
-    variants = [("concat", 0), *[("deep_cross_attention", n) for n in (4, 8, 16)]]
-    written = []
-    for kind, num_layers in variants:
-        payload = yaml.safe_load(yaml.safe_dump(common))
-        payload["model"]["interaction"] = {
-            "kind": kind,
-            "d_model": d_model,
-            "num_layers": num_layers,
-            "num_heads": num_heads,
-            "ffn_multiplier": 4.0,
-            "dropout": 0.1,
-            "pooling": "masked_mean",
-            "bidirectional": True,
-        }
-        name = "concat" if kind == "concat" else f"deep{num_layers}"
-        path = config_dir / f"v065_{name}_ranknet.yaml"
-        path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        written.append(path)
-        print(f"wrote config: {path}")
-    return written
-
 
 def _load_revisions(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
@@ -306,24 +194,6 @@ def _encoder_config(
         max_length=max_length,
         long_sequence_strategy="truncate",
     )
-
-
-def _encoder_mapping(
-    model_info: dict[str, str], cache_dir: Path, max_length: int
-) -> dict[str, object]:
-    return {
-        "name": model_info["model_name"],
-        "revision": model_info["model_revision"],
-        "tokenizer_revision": model_info["tokenizer_revision"],
-        "mode": "frozen_cached",
-        "embedding_layer": -1,
-        "cache_dir": str(cache_dir),
-        "max_length": max_length,
-        "long_sequence_strategy": "truncate",
-        "lora_rank": None,
-        "lora_alpha": None,
-        "lora_dropout": None,
-    }
 
 
 def _release_device_cache() -> None:

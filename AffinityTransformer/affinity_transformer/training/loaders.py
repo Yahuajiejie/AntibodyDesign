@@ -22,6 +22,7 @@ from ..embeddings import (
     collate_embedding_batch,
     collate_pair_embedding_batch,
 )
+from .samplers import GroupShuffleSampler
 
 
 def build_online_train_loader(
@@ -35,10 +36,11 @@ def build_online_train_loader(
     if pairs.empty:
         raise ValueError(f"No trainable pairs could be built from {path}")
     nw = config.train.num_workers
+    dataset = PairwiseAffinityDataset(records, pairs)
     loader = DataLoader(
-        PairwiseAffinityDataset(records, pairs),
+        dataset,
         batch_size=config.train.batch_size,
-        shuffle=False,
+        sampler=GroupShuffleSampler(pairs, config.data.seed),
         collate_fn=partial(
             collate_pair_batch,
             antibody_tokenizer=antibody_tokenizer,
@@ -87,10 +89,11 @@ def build_cached_train_loader(
     if pairs.empty:
         raise ValueError("No trainable pairs could be built for frozen_cached training")
     nw = config.train.num_workers
+    dataset = PairwiseAffinityDataset(records, pairs)
     return DataLoader(
-        PairwiseAffinityDataset(records, pairs),
+        dataset,
         batch_size=config.train.batch_size,
-        shuffle=False,
+        sampler=GroupShuffleSampler(pairs, config.data.seed),
         collate_fn=partial(
             collate_pair_embedding_batch,
             antibody_store=antibody_store,

@@ -1,88 +1,62 @@
-"""Tests for the generated v0.65 cache/training Slurm workflow."""
+"""Tests for the human-owned v0.65 config and cache-only Slurm workflow."""
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 from pathlib import Path
 
 import yaml
 
-from affinity_transformer.config import load_config
-
 ROOT = Path(__file__).resolve().parents[1]
-BUILDER_PATH = ROOT / "scripts/embeddings/build_v065_cache_and_configs.py"
+BUILDER_PATH = ROOT / "scripts/embeddings/build_v065_cache.py"
+CONFIG_DIR = ROOT / "configs/v065"
 
 
-def _load_builder_module():
-    spec = importlib.util.spec_from_file_location("v065_cache_builder", BUILDER_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_write_training_configs_generates_concat_and_fixed_deep_depths(tmp_path: Path):
-    builder = _load_builder_module()
-    split_dir = tmp_path / "splits"
-    split_dir.mkdir()
-    split_paths = {}
-    for split in ("train", "valid", "test"):
-        path = split_dir / f"{split}.parquet"
-        path.write_bytes(b"")
-        split_paths[split] = path
-    antibody_cache = tmp_path / "ab-cache"
-    antigen_cache = tmp_path / "ag-cache"
-    antibody_cache.mkdir()
-    antigen_cache.mkdir()
-    config_dir = tmp_path / "configs"
-
-    paths = builder.write_training_configs(
-        config_dir=config_dir,
-        split_paths=split_paths,
-        antibody_info={
-            "model_name": "fake-ab",
-            "model_revision": "ab-revision-1",
-            "tokenizer_revision": "ab-tokenizer-1",
-        },
-        antigen_info={
-            "model_name": "fake-ag",
-            "model_revision": "ag-revision-1",
-            "tokenizer_revision": "ag-tokenizer-1",
-        },
-        antibody_cache=antibody_cache,
-        antigen_cache=antigen_cache,
-        antibody_max_length=256,
-        antigen_max_length=512,
-        d_model=256,
-        num_heads=8,
-        batch_size=2,
-        epochs=10,
-        lr=1.0e-4,
-        max_pairs_per_group=200,
-        seed=0,
-    )
-
+def test_v065_configs_are_static_human_owned_files():
+    paths = sorted(CONFIG_DIR.glob("v065_*_ranknet.yaml"))
     assert [path.name for path in paths] == [
         "v065_concat_ranknet.yaml",
+        "v065_deep16_ranknet.yaml",
         "v065_deep4_ranknet.yaml",
         "v065_deep8_ranknet.yaml",
-        "v065_deep16_ranknet.yaml",
     ]
-    expected = [("concat", 0), ("deep_cross_attention", 4),
-                ("deep_cross_attention", 8), ("deep_cross_attention", 16)]
-    for path, (kind, depth) in zip(paths, expected):
+    expected = {
+        "v065_concat_ranknet.yaml": ("concat", 0),
+        "v065_deep4_ranknet.yaml": ("deep_cross_attention", 4),
+        "v065_deep8_ranknet.yaml": ("deep_cross_attention", 8),
+        "v065_deep16_ranknet.yaml": ("deep_cross_attention", 16),
+    }
+    for path in paths:
+        kind, depth = expected[path.name]
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert raw["model"]["interaction"]["kind"] == kind
         assert raw["model"]["interaction"]["num_layers"] == depth
         assert raw["model"]["antibody_encoder"]["mode"] == "frozen_cached"
         assert raw["train"]["device"] == "cuda"
-        assert raw["train"]["num_workers"] == 4
+        assert raw["train"]["batch_size"] > 1, "batch_size must be > 1; check for debug placeholder"
+        assert raw["train"]["num_workers"] >= 1
         assert raw["train"]["pin_memory"] is True
-        config = load_config(path)
-        assert config.model.interaction.num_layers == depth
-        assert config.train.num_workers == 4
-        assert config.train.pin_memory is True
+
+
+def test_cache_builder_has_no_training_config_write_path():
+    builder = BUILDER_PATH.read_text(encoding="utf-8")
+    sbatch = (ROOT / "scripts/slurm/build_v065_embedding_cache.sbatch").read_text(
+        encoding="utf-8"
+    )
+
+    assert "write_training_configs" not in builder
+    assert "--config-dir" not in builder
+    assert "--batch-size" not in builder
+    assert "CONFIG_DIR" not in sbatch
+    assert "generated configs" not in sbatch
+
+
+def test_submit_chain_uses_static_config_directory():
+    script = (ROOT / "scripts/slurm/submit_v065_training_chain.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'CONFIG_DIR="${CONFIG_DIR:-configs/v065}"' in script
+    assert "human-owned training config" in script
 
 
 def test_new_slurm_shell_scripts_pass_bash_syntax_check():

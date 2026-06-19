@@ -9,7 +9,7 @@ mkdir -p logs/slurm
 REVISION_FILE="${REVISION_FILE:-cache/model_revisions_v065.yaml}"
 SPLIT_DIR="${SPLIT_DIR:-processed/binding/splits/g00_max_antigen_context}"
 CACHE_ROOT="${CACHE_ROOT:-processed/embeddings/v065}"
-CONFIG_DIR="${CONFIG_DIR:-runs/v065/configs}"
+CONFIG_DIR="${CONFIG_DIR:-configs/v065}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/slurm/v065-${RUN_TAG}}"
 
@@ -18,6 +18,17 @@ if [[ ! -f "${REVISION_FILE}" ]]; then
   echo "Run: bash scripts/slurm/download_v065_models_login.sh" >&2
   exit 2
 fi
+
+for config in \
+  "${CONFIG_DIR}/v065_concat_ranknet.yaml" \
+  "${CONFIG_DIR}/v065_deep4_ranknet.yaml" \
+  "${CONFIG_DIR}/v065_deep8_ranknet.yaml" \
+  "${CONFIG_DIR}/v065_deep16_ranknet.yaml"; do
+  if [[ ! -f "${config}" ]]; then
+    echo "[FATAL] Missing human-owned training config: ${config}" >&2
+    exit 3
+  fi
+done
 
 if [[ "${SKIP_G00:-0}" == "1" ]]; then
   for split in train valid test; do
@@ -55,7 +66,7 @@ fi
 
 cache="$(sbatch --parsable \
   --dependency="afterok:${g00_dependency}:${models}" \
-  --export="ALL,SPLIT_DIR=${SPLIT_DIR},REVISION_FILE=${REVISION_FILE},CACHE_ROOT=${CACHE_ROOT},CONFIG_DIR=${CONFIG_DIR}" \
+  --export="ALL,SPLIT_DIR=${SPLIT_DIR},REVISION_FILE=${REVISION_FILE},CACHE_ROOT=${CACHE_ROOT}" \
   scripts/slurm/build_v065_embedding_cache.sbatch)"
 echo "submitted formal embedding cache: ${cache}"
 

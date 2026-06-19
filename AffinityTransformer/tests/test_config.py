@@ -78,6 +78,7 @@ def test_load_config_valid(tmp_path, existing_train_path):
     assert config.model.use_cross_attention is False
     assert config.train.device == "cpu"
     assert config.train.lr == pytest.approx(1.0e-4)
+    assert config.cross_validation.enabled is False
 
 
 def test_load_config_parses_v065_cached_concat_model(tmp_path, existing_train_path):
@@ -399,4 +400,57 @@ def test_load_config_not_a_mapping(tmp_path):
     config_path.write_text(yaml.safe_dump(["not", "a", "dict"])) # 写入一个列表
     # 再检查文件有没有崩溃之前，这个程序就崩溃了
     with pytest.raises(ValueError, match="top-level mapping"):
+        load_config(config_path)
+
+
+def test_load_config_parses_group_cross_validation(
+    tmp_path, existing_train_path
+):
+    valid_path = tmp_path / "valid.parquet"
+    valid_path.write_bytes(b"")
+    config_path = _write_config(
+        tmp_path,
+        {
+            "cross_validation": {
+                "enabled": True,
+                "n_splits": 5,
+                "source": "train_valid",
+                "seed": 73,
+            }
+        },
+        train_path=existing_train_path,
+        valid_path=valid_path,
+    )
+
+    config = load_config(config_path)
+
+    assert config.cross_validation.enabled is True
+    assert config.cross_validation.n_splits == 5
+    assert config.cross_validation.source == "train_valid"
+    assert config.cross_validation.seed == 73
+
+
+def test_cross_validation_rejects_invalid_fold_count(
+    tmp_path, existing_train_path
+):
+    config_path = _write_config(
+        tmp_path,
+        {"cross_validation": {"enabled": True, "n_splits": 1}},
+        train_path=existing_train_path,
+    )
+
+    with pytest.raises(ValueError, match="n_splits"):
+        load_config(config_path)
+
+
+def test_cross_validation_rejects_string_enabled(
+    tmp_path, existing_train_path
+):
+    config_path = _write_config(
+        tmp_path,
+        {"cross_validation": {"enabled": "false", "n_splits": 5}},
+        train_path=existing_train_path,
+    )
+
+    with pytest.raises(ValueError, match="enabled"):
         load_config(config_path)
