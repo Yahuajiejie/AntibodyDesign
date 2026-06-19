@@ -48,7 +48,7 @@ model:
     pointwise_loss: huber
 
 train:
-  batch_size: 2048
+  batch_size: 512
   lr: 1.0e-4
   epochs: 10
   device: cuda

@@ -345,16 +345,20 @@ class Trainer:
         total_batches = _try_len(self.train_dataloader)
         t0 = time.time()
 
+        autocast_enabled = self.device.type == "cuda"
         for batch in self.train_dataloader:
             batch = _move_pair_batch(batch, self.device)
-            score_i = self.model(batch.left)
-            score_j = self.model(batch.right)
-            loss = ranknet_loss(
-                score_i,
-                score_j,
-                batch.y_ij,
-                sigma=self.config.model.objective.sigma,
-            )
+            with torch.autocast(
+                device_type="cuda", dtype=torch.bfloat16, enabled=autocast_enabled
+            ):
+                score_i = self.model(batch.left)
+                score_j = self.model(batch.right)
+                loss = ranknet_loss(
+                    score_i,
+                    score_j,
+                    batch.y_ij,
+                    sigma=self.config.model.objective.sigma,
+                )
 
             if torch.isnan(loss):
                 error_path = self._save_error_context(epoch, batch, score_i, score_j)
@@ -465,10 +469,15 @@ class Trainer:
         total_eval_batches = _try_len(dataloader)
         epoch_tag = f"epoch {epoch}  " if epoch is not None else ""
         t0 = time.time()
+        autocast_enabled = self.device.type == "cuda"
         with torch.no_grad():
             for batch in dataloader:
                 batch = _move_record_batch(batch, self.device)
-                scores = self.model(batch)
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=autocast_enabled
+                ):
+                    scores = self.model(batch)
+                scores = scores.float()
                 for record_id, group_id, label, score in zip(
                     batch.record_ids, batch.group_ids, batch.labels.tolist(), scores.tolist()
                 ):

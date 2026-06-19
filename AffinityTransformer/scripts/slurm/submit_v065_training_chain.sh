@@ -84,11 +84,18 @@ submit_training() {
     scripts/slurm/run_config.sbatch
 }
 
-concat="$(submit_training concat "${CONFIG_DIR}/v065_concat_ranknet.yaml" "${cache}")"
-echo "submitted concat after cache: ${concat}"
+if [[ "${SKIP_CONCAT:-0}" == "1" ]]; then
+  concat="skipped"
+  deep4_dependency="${cache}"
+  echo "skipping concat (SKIP_CONCAT=1)"
+else
+  concat="$(submit_training concat "${CONFIG_DIR}/v065_concat_ranknet.yaml" "${cache}")"
+  deep4_dependency="${concat}"
+  echo "submitted concat after cache: ${concat}"
+fi
 
-deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_ranknet.yaml" "${concat}")"
-echo "submitted deep4 after concat: ${deep4}"
+deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_ranknet.yaml" "${deep4_dependency}")"
+echo "submitted deep4 after ${deep4_dependency}: ${deep4}"
 
 deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_ranknet.yaml" "${deep4}")"
 echo "submitted deep8 after deep4: ${deep8}"

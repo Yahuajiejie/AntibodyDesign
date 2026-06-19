@@ -12,6 +12,8 @@
 
 set -euo pipefail
 
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 LOAD_CUDA=1
 source scripts/slurm/activate_affitest.sh
 affinity_check_gpu_runtime
