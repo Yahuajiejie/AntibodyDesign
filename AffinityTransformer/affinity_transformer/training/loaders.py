@@ -176,4 +176,5 @@ def _build_pairs(records: pd.DataFrame, config: Config) -> pd.DataFrame:
         intra_block_pairs_per_large_group=config.data.intra_block_pairs_per_large_group,
         discrete_label_unique_threshold=config.data.discrete_label_unique_threshold,
         discrete_label_ratio_threshold=config.data.discrete_label_ratio_threshold,
+        tree_extra_random_pairs_per_group=config.data.tree_extra_random_pairs_per_group,
     )

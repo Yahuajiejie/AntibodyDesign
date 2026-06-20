@@ -331,6 +331,85 @@ def test_build_pairs_large_block_sampler_includes_cross_and_intra_block_pairs():
     assert (block_i == block_j).any()
 
 
+def _assert_connected_with_min_degree_two(pairs: pd.DataFrame, record_ids) -> None:
+    """Shared shape-check for the tree-shaped strategies below.
+
+    Every record must appear in at least 2 edges (no degree-1 leaves left
+    after `_add_redundancy_edges`) and the whole group must be one
+    connected component (no record stranded by itself).
+    """
+    import collections
+
+    record_ids = list(record_ids)
+    degree: dict[str, int] = collections.defaultdict(int)
+    adjacency: dict[str, set[str]] = collections.defaultdict(set)
+    for _, row in pairs.iterrows():
+        a, b = row["record_id_i"], row["record_id_j"]
+        degree[a] += 1
+        degree[b] += 1
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+
+    if len(record_ids) <= 3:
+        return  # too few records for "every node has 2 distinct neighbors" to be meaningful
+
+    for record_id in record_ids:
+        assert degree[record_id] >= 2, f"{record_id} has degree {degree[record_id]} < 2"
+
+    visited = {record_ids[0]}
+    queue = collections.deque([record_ids[0]])
+    while queue:
+        current = queue.popleft()
+        for neighbor in adjacency[current]:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    assert visited == set(record_ids), "pair graph is not fully connected"
+
+
+def test_build_pairs_balanced_tree_strategy_basic_properties():
+    n = 500
+    records = _large_continuous_records(n)
+
+    pairs = build_pairs(records, max_pairs_per_group=10**9, seed=0, pair_sample_strategy="balanced_tree")
+
+    assert not (pairs["label_i"] == pairs["label_j"]).any()
+    assert n - 1 <= len(pairs) <= 3 * n  # backbone (n-1) plus at most 2 redundancy edges/node
+    _assert_connected_with_min_degree_two(pairs, records["record_id"])
+
+    pairs_again = build_pairs(records, max_pairs_per_group=10**9, seed=0, pair_sample_strategy="balanced_tree")
+    pd.testing.assert_frame_equal(pairs, pairs_again)  # deterministic: same seed -> identical tree
+
+
+def test_build_pairs_randomized_bst_strategy_basic_properties():
+    n = 500
+    records = _large_continuous_records(n)
+
+    pairs = build_pairs(records, max_pairs_per_group=10**9, seed=0, pair_sample_strategy="randomized_bst")
+
+    assert not (pairs["label_i"] == pairs["label_j"]).any()
+    assert n - 1 <= len(pairs) <= 3 * n
+    _assert_connected_with_min_degree_two(pairs, records["record_id"])
+
+    pairs_same_seed = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0, pair_sample_strategy="randomized_bst"
+    )
+    pd.testing.assert_frame_equal(pairs, pairs_same_seed)  # same seed -> same insertion order
+
+    pairs_other_seed = build_pairs(
+        records, max_pairs_per_group=10**9, seed=1, pair_sample_strategy="randomized_bst"
+    )
+    assert not pairs.equals(pairs_other_seed)  # different seed -> different tree shape
+
+
+def test_build_pairs_rejects_dropped_heap_array_strategy(toy_records):
+    # heap_array was implemented, measured, and dropped (systematic bias toward
+    # one half of the affinity range) -- it must stay rejected, not silently
+    # resurface as a valid value.
+    with pytest.raises(ValueError, match="pair_sample_strategy"):
+        build_pairs(toy_records, max_pairs_per_group=10, seed=0, pair_sample_strategy="heap_array")
+
+
 def test_build_pairs_large_imbalanced_binary_group_samples_across_classes(monkeypatch):
     records = _large_binary_records(n_negative=5_000, n_positive=10)
 

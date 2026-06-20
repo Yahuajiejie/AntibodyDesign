@@ -49,7 +49,18 @@ class DataConfig:
         max_pairs_per_group: Maximum number of pairwise examples sampled
             per `group_id` (see `build_pairs`).
         pair_sample_strategy: Pair sampling policy passed to `build_pairs`.
-            `"absolute_cap"` preserves the legacy behavior.
+            `"absolute_cap"` preserves the legacy behavior. `"balanced_tree"`
+            builds a deterministic balanced-BST comparison structure instead
+            of sampling from candidate pairs: exactly `n_records - 1` pairs
+            per group (linear in group size, so a group's contribution to
+            the pooled training loss already tracks its true size without
+            needing `weight_pairs_by_group_size`), with graph diameter
+            O(log n) rather than the O(n) diameter of a pure nearest-rank
+            chain. `max_pairs_per_group`/`pair_fraction`/`min_pairs_per_group`
+            /`large_group_threshold`/`pair_enumeration_limit`/
+            `label_block_count`/`intra_block_pairs_per_large_group` are
+            ignored under `"balanced_tree"`; see `tree_extra_random_pairs_per_group`
+            instead.
         pair_fraction: Fraction used by `"capped_proportional"` sampling.
         min_pairs_per_group: Lower target used by `"capped_proportional"`.
         large_group_threshold: Trainable-record threshold above which
@@ -64,6 +75,16 @@ class DataConfig:
             a large group as discrete/repeated-label.
         discrete_label_ratio_threshold: Unique-label ratio threshold for
             treating a large group as discrete/repeated-label.
+        tree_extra_random_pairs_per_group: Only used when
+            `pair_sample_strategy="balanced_tree"`. The deterministic tree
+            backbone is the exact median every time, so the same comparisons
+            recur every epoch with no resampling diversity, and a single
+            mislabeled record at a structurally privileged split point has
+            no redundant path to be outvoted by. Setting this > 0 draws
+            that many additional uniformly-random pairs per group on top of
+            the backbone (deduplicated against it) to restore some of that
+            robustness at a small, still-linear extra cost. Default 0
+            (pure deterministic tree).
         weight_pairs_by_group_size: If True, scale each sampled pair's
             RankNet loss by `n_records_in_group / n_pairs_sampled_for_group`
             (normalized to leave the population-level mean weight at 1.0).
@@ -95,6 +116,7 @@ class DataConfig:
     intra_block_pairs_per_large_group: int = 50
     discrete_label_unique_threshold: int = 32
     discrete_label_ratio_threshold: float = 0.05
+    tree_extra_random_pairs_per_group: int = 0
     weight_pairs_by_group_size: bool = False
     all_records_path: Path | None = None
     test_path: Path | None = None
@@ -482,6 +504,9 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
         ),
         discrete_label_unique_threshold=int(section.get("discrete_label_unique_threshold", 32)),
         discrete_label_ratio_threshold=float(section.get("discrete_label_ratio_threshold", 0.05)),
+        tree_extra_random_pairs_per_group=int(
+            section.get("tree_extra_random_pairs_per_group", 0)
+        ),
         weight_pairs_by_group_size=bool(section.get("weight_pairs_by_group_size", False)),
         all_records_path=all_records_path,
         test_path=test_path,

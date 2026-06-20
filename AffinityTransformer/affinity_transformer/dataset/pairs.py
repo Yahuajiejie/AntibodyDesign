@@ -8,9 +8,11 @@ import random
 import pandas as pd
 
 from .pair_sampling import (
+    _balanced_tree_pairs,
     _candidate_pair_count,
     _pair_row,
     _pair_sample_count,
+    _randomized_bst_pairs,
     _sample_large_group_pairs,
     _should_enumerate_pairs,
     _validate_pair_sampling,
@@ -56,6 +58,7 @@ def build_pairs(
     intra_block_pairs_per_large_group: int = _DEFAULT_INTRA_BLOCK_PAIRS_PER_LARGE_GROUP,
     discrete_label_unique_threshold: int = _DEFAULT_DISCRETE_LABEL_UNIQUE_THRESHOLD,
     discrete_label_ratio_threshold: float = _DEFAULT_DISCRETE_LABEL_RATIO_THRESHOLD,
+    tree_extra_random_pairs_per_group: int = 0,
 ) -> pd.DataFrame:
     """Build pairwise ranking examples within each group."""
     required = ("record_id", "group_id", "rank_label", "label_kind", "keep_for_training")
@@ -73,6 +76,7 @@ def build_pairs(
         intra_block_pairs_per_large_group,
         discrete_label_unique_threshold,
         discrete_label_ratio_threshold,
+        tree_extra_random_pairs_per_group,
     )
 
     trainable = filter_trainable_records(records)
@@ -81,6 +85,21 @@ def build_pairs(
     for group_id, group in trainable.groupby("group_id", sort=True):
         n_candidates = _candidate_pair_count(group)
         if n_candidates == 0:
+            continue
+
+        if pair_sample_strategy == "balanced_tree":
+            rows.extend(
+                _balanced_tree_pairs(
+                    str(group_id),
+                    group,
+                    seed=seed,
+                    extra_random_pairs_per_group=tree_extra_random_pairs_per_group,
+                )
+            )
+            continue
+
+        if pair_sample_strategy == "randomized_bst":
+            rows.extend(_randomized_bst_pairs(str(group_id), group, seed=seed))
             continue
 
         if _should_enumerate_pairs(group, n_candidates, large_group_threshold, pair_enumeration_limit):

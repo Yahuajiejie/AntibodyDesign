@@ -3,6 +3,14 @@
 from __future__ import annotations
 
 
+_VALID_PAIR_SAMPLE_STRATEGIES = {
+    "absolute_cap",
+    "capped_proportional",
+    "balanced_tree",
+    "randomized_bst",
+}
+
+
 def _validate_pair_sampling(
     max_pairs_per_group: int,
     pair_sample_strategy: str,
@@ -14,6 +22,7 @@ def _validate_pair_sampling(
     intra_block_pairs_per_large_group: int,
     discrete_label_unique_threshold: int,
     discrete_label_ratio_threshold: float,
+    tree_extra_random_pairs_per_group: int = 0,
 ) -> None:
     if max_pairs_per_group < 1:
         raise ValueError(f"max_pairs_per_group must be >= 1, got {max_pairs_per_group}")
@@ -40,9 +49,9 @@ def _validate_pair_sampling(
             "discrete_label_ratio_threshold must be in (0, 1], "
             f"got {discrete_label_ratio_threshold}"
         )
-    if pair_sample_strategy not in {"absolute_cap", "capped_proportional"}:
+    if pair_sample_strategy not in _VALID_PAIR_SAMPLE_STRATEGIES:
         raise ValueError(
-            "pair_sample_strategy must be 'absolute_cap' or 'capped_proportional', "
+            f"pair_sample_strategy must be one of {sorted(_VALID_PAIR_SAMPLE_STRATEGIES)}, "
             f"got {pair_sample_strategy!r}"
         )
     if pair_sample_strategy == "capped_proportional":
@@ -50,3 +59,8 @@ def _validate_pair_sampling(
             raise ValueError(
                 "pair_fraction must be in (0, 1] when pair_sample_strategy='capped_proportional'"
             )
+    if tree_extra_random_pairs_per_group < 0:
+        raise ValueError(
+            "tree_extra_random_pairs_per_group must be >= 0, "
+            f"got {tree_extra_random_pairs_per_group}"
+        )

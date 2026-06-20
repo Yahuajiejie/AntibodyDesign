@@ -56,6 +56,36 @@ def _canonical_pair(
     return record_id_b, label_b, record_id_a, label_a
 
 
+def _emit_pair(
+    record_id_a: str,
+    label_a: float,
+    record_id_b: str,
+    label_b: float,
+    group_id: object,
+    rows: list[dict[str, object]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append one canonicalized, deduplicated pair row, skipping ties.
+
+    Shared by every tree-shaped pair builder (`tree.py`, `heap_tree.py`,
+    `randomized_tree.py`): each decides which two records form an edge in
+    its own structure, then hands them here to apply the same `y_ij`
+    convention, `pair_id` canonicalization, and `seen`-based dedup that
+    `build_pairs`'s other strategies already use.
+    """
+    if label_a == label_b:
+        return
+    record_id_i, label_i, record_id_j, label_j = _canonical_pair(
+        record_id_a, label_a, record_id_b, label_b
+    )
+    key = (record_id_i, record_id_j)
+    if key in seen:
+        return
+    seen.add(key)
+    y_ij = 1.0 if label_i > label_j else 0.0
+    rows.append(_pair_row(group_id, record_id_i, record_id_j, label_i, label_j, y_ij))
+
+
 def _weighted_choice(items, rng: random.Random):
     total = sum(weight for _, weight in items)
     if total <= 0:
