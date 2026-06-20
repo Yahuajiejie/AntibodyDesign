@@ -331,16 +331,9 @@ def test_build_pairs_large_block_sampler_includes_cross_and_intra_block_pairs():
     assert (block_i == block_j).any()
 
 
-def _assert_connected_with_min_degree_two(pairs: pd.DataFrame, record_ids) -> None:
-    """Shared shape-check for the tree-shaped strategies below.
-
-    Every record must appear in at least 2 edges (no degree-1 leaves left
-    after `_add_redundancy_edges`) and the whole group must be one
-    connected component (no record stranded by itself).
-    """
+def _degree_and_adjacency(pairs: pd.DataFrame):
     import collections
 
-    record_ids = list(record_ids)
     degree: dict[str, int] = collections.defaultdict(int)
     adjacency: dict[str, set[str]] = collections.defaultdict(set)
     for _, row in pairs.iterrows():
@@ -349,12 +342,15 @@ def _assert_connected_with_min_degree_two(pairs: pd.DataFrame, record_ids) -> No
         degree[b] += 1
         adjacency[a].add(b)
         adjacency[b].add(a)
+    return degree, adjacency
 
-    if len(record_ids) <= 3:
-        return  # too few records for "every node has 2 distinct neighbors" to be meaningful
 
-    for record_id in record_ids:
-        assert degree[record_id] >= 2, f"{record_id} has degree {degree[record_id]} < 2"
+def _assert_connected(pairs: pd.DataFrame, record_ids) -> None:
+    """The whole group must be one connected component (no record stranded)."""
+    import collections
+
+    record_ids = list(record_ids)
+    _, adjacency = _degree_and_adjacency(pairs)
 
     visited = {record_ids[0]}
     queue = collections.deque([record_ids[0]])
@@ -365,6 +361,25 @@ def _assert_connected_with_min_degree_two(pairs: pd.DataFrame, record_ids) -> No
                 visited.add(neighbor)
                 queue.append(neighbor)
     assert visited == set(record_ids), "pair graph is not fully connected"
+
+
+def _assert_connected_with_min_degree_two(pairs: pd.DataFrame, record_ids) -> None:
+    """Shared shape-check for the tree-shaped strategies below.
+
+    Every record must appear in at least 2 edges (no degree-1 leaves left
+    after `_add_redundancy_edges`) and the whole group must be one
+    connected component (no record stranded by itself).
+    """
+    record_ids = list(record_ids)
+    degree, _ = _degree_and_adjacency(pairs)
+
+    if len(record_ids) <= 3:
+        return  # too few records for "every node has 2 distinct neighbors" to be meaningful
+
+    for record_id in record_ids:
+        assert degree[record_id] >= 2, f"{record_id} has degree {degree[record_id]} < 2"
+
+    _assert_connected(pairs, record_ids)
 
 
 def test_build_pairs_balanced_tree_strategy_basic_properties():
@@ -400,6 +415,80 @@ def test_build_pairs_randomized_bst_strategy_basic_properties():
         records, max_pairs_per_group=10**9, seed=1, pair_sample_strategy="randomized_bst"
     )
     assert not pairs.equals(pairs_other_seed)  # different seed -> different tree shape
+
+
+def test_build_pairs_balanced_tree_add_redundancy_edges_false_yields_bare_backbone():
+    n = 500
+    records = _large_continuous_records(n)  # all-distinct rank_label -> no ties to drop
+
+    backbone = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="balanced_tree", add_redundancy_edges=False,
+    )
+    with_redundancy = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="balanced_tree", add_redundancy_edges=True,
+    )
+
+    assert not (backbone["label_i"] == backbone["label_j"]).any()
+    assert len(backbone) == n - 1  # exactly the tree backbone: no ties here, no redundancy edges
+    _assert_connected(backbone, records["record_id"])  # a tree is connected on its own
+
+    degree, _ = _degree_and_adjacency(backbone)
+    assert any(degree[r] == 1 for r in records["record_id"])  # leaves are no longer patched to >=2
+
+    # The backbone is a strict subset of what add_redundancy_edges=True produces.
+    backbone_keys = set(zip(backbone["record_id_i"], backbone["record_id_j"]))
+    redundancy_keys = set(zip(with_redundancy["record_id_i"], with_redundancy["record_id_j"]))
+    assert backbone_keys.issubset(redundancy_keys)
+    assert len(with_redundancy) > len(backbone)
+
+    # Still deterministic for a fixed seed.
+    backbone_again = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="balanced_tree", add_redundancy_edges=False,
+    )
+    pd.testing.assert_frame_equal(backbone, backbone_again)
+
+
+def test_build_pairs_randomized_bst_add_redundancy_edges_false_yields_bare_backbone():
+    n = 500
+    records = _large_continuous_records(n)
+
+    backbone = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="randomized_bst", add_redundancy_edges=False,
+    )
+    with_redundancy = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="randomized_bst", add_redundancy_edges=True,
+    )
+
+    assert not (backbone["label_i"] == backbone["label_j"]).any()
+    assert len(backbone) == n - 1  # bare insertion-order backbone, no ties, no redundancy edges
+    _assert_connected(backbone, records["record_id"])
+
+    degree, _ = _degree_and_adjacency(backbone)
+    assert any(degree[r] == 1 for r in records["record_id"])
+
+    backbone_keys = set(zip(backbone["record_id_i"], backbone["record_id_j"]))
+    redundancy_keys = set(zip(with_redundancy["record_id_i"], with_redundancy["record_id_j"]))
+    assert backbone_keys.issubset(redundancy_keys)
+    assert len(with_redundancy) > len(backbone)
+
+    # Same seed -> same insertion order even with redundancy edges off.
+    backbone_same_seed = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="randomized_bst", add_redundancy_edges=False,
+    )
+    pd.testing.assert_frame_equal(backbone, backbone_same_seed)
+
+    # Different seed -> different insertion order even with redundancy edges off.
+    backbone_other_seed = build_pairs(
+        records, max_pairs_per_group=10**9, seed=1,
+        pair_sample_strategy="randomized_bst", add_redundancy_edges=False,
+    )
+    assert not backbone.equals(backbone_other_seed)
 
 
 def test_build_pairs_rejects_dropped_heap_array_strategy(toy_records):

@@ -85,6 +85,18 @@ class DataConfig:
             the backbone (deduplicated against it) to restore some of that
             robustness at a small, still-linear extra cost. Default 0
             (pure deterministic tree).
+        add_redundancy_edges: Only used when `pair_sample_strategy` is
+            `"balanced_tree"` or `"randomized_bst"`. Default `True` adds
+            each node's ancestor-jump edge and same-depth random edge on
+            top of the tree backbone (see `tree._add_redundancy_edges`),
+            fixing leaf under-coverage and giving near-root edges a backup
+            path. Set `False` to emit only the bare `n_records - 1` tree
+            backbone per group -- roughly a third of the default pair
+            count, still O(log n) diameter, but every leaf drops back to
+            one edge, near-root edges have no backup, and (for
+            `"randomized_bst"`) the redundancy step's own resampled edges
+            -- the only other source of epoch-to-epoch diversity below the
+            tree-shape level -- are gone too.
         weight_pairs_by_group_size: If True, scale each sampled pair's
             RankNet loss by `n_records_in_group / n_pairs_sampled_for_group`
             (normalized to leave the population-level mean weight at 1.0).
@@ -117,6 +129,7 @@ class DataConfig:
     discrete_label_unique_threshold: int = 32
     discrete_label_ratio_threshold: float = 0.05
     tree_extra_random_pairs_per_group: int = 0
+    add_redundancy_edges: bool = True
     weight_pairs_by_group_size: bool = False
     all_records_path: Path | None = None
     test_path: Path | None = None
@@ -507,6 +520,7 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
         tree_extra_random_pairs_per_group=int(
             section.get("tree_extra_random_pairs_per_group", 0)
         ),
+        add_redundancy_edges=bool(section.get("add_redundancy_edges", True)),
         weight_pairs_by_group_size=bool(section.get("weight_pairs_by_group_size", False)),
         all_records_path=all_records_path,
         test_path=test_path,

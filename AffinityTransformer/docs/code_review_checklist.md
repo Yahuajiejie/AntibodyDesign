@@ -22,39 +22,39 @@
 
 ## Layer 0：配置契约
 
-- [ ] `affinity_transformer/config.py` 🔧 +96行（这次最大改动之一）
+- [x] `affinity_transformer/config.py` 🔧 +96行（这次最大改动之一）
   - 看什么：`DataConfig`新增的字段（`cross_validation`整块、`weight_pairs_by_group_size`、`tree_extra_random_pairs_per_group`等）是否在**三处**保持一致——dataclass默认值、`load_config`里的`section.get(key, default)`解析、`_validate_pair_sampling`里的校验范围。三处不一致是最容易藏雷的地方，因为yaml拼错字段名时`section.get`会静默回退到默认值，不报错。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/config.py`
-- [ ] `affinity_transformer/dataset/schema.py` ⏭ 未变
+- [x] `affinity_transformer/dataset/schema.py` ⏭ 未变
   - 确认一下：`git diff a17dd18 d765a17 -- affinity_transformer/dataset/schema.py` 应为空，跳过。
 
 ## Layer 1：纯函数 / 底层工具（性价比最高，优先看）
 
-- [ ] `affinity_transformer/model/losses.py` 🔧 +9行
+- [x] `affinity_transformer/model/losses.py` 🔧 +9行
   - 看什么：`ranknet_loss`新增的`weight`参数有没有改变`weight=None`时的行为（应该完全等价于改动前）；`F.binary_cross_entropy_with_logits(..., weight=weight)`的weight语义是"每个样本的loss乘这个系数"还是"梯度也按比例缩放"——确认跟`training/loaders.py`里`compute_group_pair_weights`算出来的权重含义对得上。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/model/losses.py`
-- [ ] `affinity_transformer/metrics.py` ⏭ 未变（`git diff`确认即可）
+- [x] `affinity_transformer/metrics.py` ⏭ 未变（`git diff`确认即可）
 - [ ] `affinity_transformer/dataset/pair_sampling/common.py` ⏭ 这次debug提交里未变；**本轮会话有未提交改动，见第8层**
 
 ## Layer 2：数据集构造
 
-- [ ] `affinity_transformer/splits.py` 🆕 整个文件新增，67行
+- [x] `affinity_transformer/splits.py` 🆕 整个文件新增，67行
   - 看什么：`build_group_kfolds`——这是`cross_validation.py`唯一依赖的核心函数，重点查"按`group_id`切分"有没有可能让同一个`group_id`同时出现在train和valid里（一旦发生就是数据泄露，而且不会报错，只会让CV分数虚高）。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/splits.py`
-- [ ] `affinity_transformer/dataset/groups.py`、`dataset/datasets.py`、`dataset/examples.py`、`dataset/pairs.py`（debug提交范围内）⏭ 未变
-- [ ] `affinity_transformer/dataset/pair_sampling/{blocks,large_group,two_label,labels,validation}.py` ⏭ 未变（本轮会话对`validation.py`有未提交改动，见第8层）
+- [x] `affinity_transformer/dataset/groups.py`、`dataset/datasets.py`、`dataset/examples.py`、`dataset/pairs.py`（debug提交范围内）⏭ 未变
+- [x] `affinity_transformer/dataset/pair_sampling/{blocks,large_group,two_label,labels,validation}.py` ⏭ 未变（本轮会话对`validation.py`有未提交改动，见第8层）
 
 ## Layer 3：Embedding / 特征层
 
-- [ ] `affinity_transformer/embeddings/store.py` 🔧 **128行改动，本次debug提交里改动最大的单个文件**
+- [x] `affinity_transformer/embeddings/store.py` 🔧 **128行改动，本次debug提交里改动最大的单个文件**
   - 看什么：debug007提到"allow using mmap"——重点查mmap模式下的并发读取是否安全（多个DataLoader worker进程同时mmap同一个shard文件，要确认没有写时复制或缓存一致性问题）；mmap失败时是否有清晰的报错而不是静默返回错误数据；之前`debug006`提到"remove LRU which decreases GPU efficiency"，确认LRU移除后没有引入内存无限增长的风险（之前靠LRU做的淘汰逻辑现在靠什么替代）。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/embeddings/store.py`
   - 这是本轮质检里**风险最高**的一项，建议单独留出时间，不要跟其他文件一起扫。
-- [ ] `embeddings/{schema,collate,extractors,huggingface,pipeline,validation}.py` ⏭ 未变
+- [x] `embeddings/{schema,collate,extractors,huggingface,pipeline,validation}.py` ⏭ 未变
 
 ## Layer 4：模型结构
 
-- [ ] `model/{ranker,embedding_ranker,factory,attention,blocks,interaction,heads,pooling,projections}.py` ⏭ 全部未变
+- [x] `model/{ranker,embedding_ranker,factory,attention,blocks,interaction,heads,pooling,projections}.py` ⏭ 全部未变
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/model/` 应该只剩`losses.py`的改动，其余为空——这一层可以快速确认完直接跳过，不用展开看。
 
 ## Layer 5：训练循环与编排（本次改动最密集的一层，留在最后看）
@@ -66,7 +66,7 @@
     3. `checkpoint_latest.pt`按epoch保存的逻辑跟"NaN loss报错保存error_context"这两条路径有没有冲突（比如NaN发生在保存checkpoint之后还是之前，会不会留下一个对应checkpoint的脏状态）。
     4. `valid_group_metrics_epoch{N}.csv`的导出会不会在`output_dir`很大、组数很多时显著拖慢每个epoch的eval阶段。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/trainer.py`
-- [ ] `affinity_transformer/training/samplers.py` 🆕 整个文件新增，44行（`GroupShuffleSampler`）
+- [x] `affinity_transformer/training/samplers.py` 🆕 整个文件新增，44行（`GroupShuffleSampler`）
   - 看什么：这是控制"每个组内的pair会不会被打散到不同batch"的关键逻辑——确认`__len__`跟`__iter__`实际产出的数量一致（`DataLoader`依赖`__len__`算总step数，算错会导致进度条/早停逻辑基于错误的总数判断）。
 - [ ] `affinity_transformer/training/cross_validation.py` 🆕 整个文件新增，131行
   - 看什么：这个模块现在没有任何v065配置启用它（`cross_validation.enabled: false`），但必须确认`run_training`里的dispatch分支万无一失——如果有人手滑把某个yaml的`enabled`改成`true`，会不会因为`all_records_path`缺失或其他前提没满足而在跑了很久之后才报错（理想情况应该在`load_config`阶段就快速失败，而不是等数据加载完才发现配置不对）。
@@ -118,3 +118,173 @@
 命令：`git diff` （工作区相对于`d765a17`的全部未提交改动）
 
 这一批目前**没有接入任何v065 yaml配置**（四个配置文件仍是`pair_sample_strategy: capped_proportional`），纯属新增、未启用，质检通过后才建议考虑要不要在某个配置上切换试跑，不要在还没验证reweight效果之前就一起提交进同一个commit。
+
+---
+
+## 附录A：`scripts/`目录里每个脚本是干什么的，属于哪一环
+
+`scripts/prepare/binding/<study>/<table>/`下有四十多个数据集目录，每个目录都是`convert.py`+`test.py`+`prepare.sh`这三个文件的固定模式，逐一展开没有意义——下面只解释这个模式一次，不重复列每个数据集。
+
+### 质检（数据准备与质量校验，发生在任何训练之前）
+
+- **`scripts/prepare/binding/<study>/<table>/convert.py`**（×40+，固定模式）：把某一个原始数据集自己的raw CSV转换成标准表格式，只在这一层处理"这个数据集特有的怪字段"——单位换算、列名映射、抗体链拆分等。
+- **`scripts/prepare/binding/<study>/<table>/test.py`**（×40+，固定模式）：对应`convert.py`的单元测试，检查转换出来的标准表是否符合schema、数值是否合理。
+- **`scripts/prepare/binding/<study>/<table>/prepare.sh`**（×40+，固定模式）：跑某一个数据集`convert.py`的shell入口，可能还包含下载原始数据的步骤。
+- **`scripts/prepare/binding/prepare_all.sh`**：批量调用上面所有数据集的`prepare.sh`，一次性把全部原始数据集转换完。
+- **`scripts/prepare/binding/merge_records.py`**：把全部数据集各自的`records.parquet`合并成一张`processed/binding/all_records.parquet`。
+- **`scripts/prepare/binding/gen_manifest.py`**：生成`manifest.csv`，记录"有哪些数据集、各自的状态"，相当于一份数据清单索引。
+- **`scripts/prepare/binding/patch_seq_nullcheck.sh`**：事后补丁脚本，专门检查序列字段是不是有空值漏网。
+- **`scripts/prepare/validate_processed_table.py`**：质检工具本身——检查任意一张标准表是否符合`affinity_transformer.dataset.schema.REQUIRED_COLUMNS`，是`docs/training_flow.md`里提到的"质检"命令对应的脚本。
+- **`scripts/data/filter_records.py`**：对合并后的全量表应用`keep_for_training`过滤规则（调用`affinity_transformer.record_filter`）。
+- **`scripts/data/inspect_records.py`**：生成数据质量摘要报告（JSON/统计量），人工质检时用来快速看一眼数据分布是否符合预期。
+- **`scripts/data/build_splits.py`**：从过滤后的全量表切出固定的train/valid/test（调用`affinity_transformer.dataset.load_records`+`record_filter`）。
+- **`scripts/analysis/group_size_stats.py`**（本轮新增）：纯诊断脚本，统计某个split里每个`group_id`的记录数/候选对数分布，给pair-sampling参数选择提供依据——严格说是"训练前的参数质检"，不是数据本身的质检。
+- **`scripts/slurm/g00_qc_and_splits.sbatch`** + **`scripts/runs/g00_qc_and_splits.sh`**：把"质检+切分"这一段在SLURM上跑起来的入口（`submit_v065_training_chain.sh`链条里的`g00`那一步）。
+
+### 训练
+
+- **`train.py`**（仓库根目录）：训练的唯一入口，读取一个yaml配置，分发到对应的训练流程，详见附录B。
+- **`scripts/slurm/setup_affitest_env.sh`/`.sbatch`**：创建/初始化`affitest`这个conda环境本身（装torch等依赖），是所有其他训练脚本的前提。
+- **`scripts/slurm/download_v065_models_login.sh`、`download_esm2_login.sh`**：在登录节点（有外网）预先下载预训练模型权重——计算节点没有外网，必须提前下好。
+- **`scripts/slurm/check_v065_models.sbatch`**：训练前确认预训练模型版本/权重文件齐全且匹配配置里写的revision。
+- **`scripts/slurm/warmup_esm2_cache.sbatch`**：预热ESM2相关缓存（大概率是HuggingFace缓存），减少正式训练时第一次访问的延迟。
+- **`scripts/embeddings/build_v065_cache.py`** + **`scripts/slurm/build_v065_embedding_cache.sbatch`**：把抗体/抗原序列跑一遍冻结的预训练编码器，写成`processed/embeddings/v065/...`下的分片embedding缓存——这一步跑完之后，`frozen_cached`模式的训练才有缓存可读。
+- **`scripts/slurm/run_config.sbatch`**：单个配置的训练入口，本质是给`train.py --config ... --output-dir ...`套一层SLURM资源声明（GPU、显存、时间上限）。
+- **`scripts/slurm/run_group.sbatch`**：通用的"跑一组训练"入口，实际执行的脚本由`GROUP_SCRIPT`环境变量指定（默认指向`g01_core_ablation.sh`）。
+- **`scripts/runs/g01_core_ablation.sh`、`g02_label_source_ablation.sh`、`g03_pair_sampling_ablation.sh`、`g04_antigen_subset_ablation.sh`**：四组具名的消融实验编排脚本，各自调用`run_many.py`跑一批固定的`configs/experiments/g0X_*.yaml`，再调用`collect_results.py`汇总。
+- **`scripts/experiments/run_many.py`**：依次对一串配置文件执行`subprocess.run([..., "train.py", "--config", cfg, ...])`，是"跑一组配置"实际发起子进程的地方。
+- **`scripts/slurm/submit_g00_g01_chain.sh`**：把质检(g00)和g01消融实验首尾接起来提交。
+- **`scripts/slurm/submit_v065_training_chain.sh`**：本轮一直在用的v065专属链条（smoke→models→g00→cache→concat→deep4→deep8→deep16）。
+
+### 验证 / 测试
+
+这里的"验证"（验证集上的指标）和"测试"（测试集上的指标）在这个项目里**不是独立脚本**，是`train.py`训练流程内部自动做的事（`Trainer.evaluate()`跑valid，`training/evaluation.py`的`write_split_evaluation`跑test，见附录B）。`scripts/`下能称为"测试"的，是软件工程意义上的单元测试：
+
+- **`scripts/slurm/smoke_test.sbatch`**：跑`python -m pytest -q`，是代码层面的"冒烟测试"——在花真正的GPU时间训练之前，先确认代码本身没有明显错误。本轮新加的`balanced_tree`/`randomized_bst`测试就是靠这个入口在集群上被执行到的。
+- **`tests/`目录**（不在`scripts/`下，但与之配套）：实际的pytest测试代码，`conftest.py`提供共享fixture（`toy_records`、假tokenizer/encoder），各`test_*.py`针对`affinity_transformer`各模块写单元测试。
+
+### 使用（训练完成后，拿模型做推理）
+
+- **`predict.py`**（仓库根目录）：命令行推理入口。
+- **`affinity_transformer/user_entry.py`**：库形式的推理入口（`AffinityPredictor`），给定抗原序列+候选抗体序列，直接返回打分排序——不要求调用方自己拼`AffinityRanker`/tokenizer/checkpoint，这些都被封装在`AffinityPredictor`内部。
+
+### 结果汇总（跨训练与使用之间）
+
+- **`scripts/experiments/collect_results.py`**：扫描一组run目录下的`metrics.json`，汇总成一张CSV报告——是消融实验"训练完了之后看结果"这一步的工具，介于训练和人工分析之间。
+
+---
+
+## 附录B：`affinity_transformer`在质检-训练-验证-测试-使用中的调用链
+
+这里只画"谁调用谁"，不重复贴代码——配合附录A，看到一个脚本名，就能在这里查到它具体往下调了哪些模块/函数，反过来也可以用这个表去对照"接口契约"：上一层传给下一层的参数，类型和含义是否真的一致。
+
+### 质检阶段
+
+```text
+raw csv（每个数据集自己的格式）
+  -> scripts/prepare/binding/<study>/<table>/convert.py
+  -> processed/binding/<study>/<table>/records.parquet
+  -> scripts/prepare/validate_processed_table.py
+       -> affinity_transformer.dataset.schema.REQUIRED_COLUMNS（校验列是否齐全）
+  -> scripts/prepare/binding/merge_records.py（纯pandas拼接，不导入affinity_transformer）
+  -> processed/binding/all_records.parquet
+  -> scripts/data/filter_records.py
+       -> affinity_transformer.record_filter.build_record_filter_config / 应用过滤规则
+  -> scripts/data/build_splits.py
+       -> affinity_transformer.dataset.load_records
+       -> affinity_transformer.record_filter（同上）
+  -> processed/binding/splits/<split_name>/{train,valid,test}.parquet
+```
+
+embedding缓存这一段是独立的一条支线，依赖上面切分好的parquet，但不依赖`train.py`：
+
+```text
+processed/binding/splits/.../{train,valid,test}.parquet
+  -> scripts/embeddings/build_v065_cache.py
+       -> affinity_transformer.embeddings.{extractors, huggingface, pipeline}（跑预训练编码器前向）
+       -> affinity_transformer.embeddings.store（写分片embedding + manifest）
+  -> processed/embeddings/v065/<encoder>/<revision>/
+```
+
+### 训练阶段（核心调用链，本轮改动最密集的地方都在这条线上）
+
+```text
+train.py: main()
+  -> affinity_transformer.config.load_config(yaml路径)
+       -> 返回 Config（DataConfig / ModelConfig / TrainConfig / CrossValidationConfig）
+  -> train.py: run_training(config_path, config, output_dir)
+       根据 config.model.antibody_encoder.mode 选 runner：
+         frozen_cached -> affinity_transformer.training.cached.run_cached_ranknet
+         其他          -> affinity_transformer.training.online.run_online_training
+       根据 config.cross_validation.enabled 决定走哪条：
+         True  -> affinity_transformer.training.cross_validation.run_group_kfold_cross_validation
+                    -> affinity_transformer.splits.build_group_kfolds
+                    -> 对每一折分别调用上面选出的 runner（test集不参与）
+         False -> affinity_transformer.training.data.resolve_data_paths(config)
+                    -> 直接调用 runner 一次（单一固定切分）
+
+  以 run_cached_ranknet 为例，runner内部依次调用：
+    -> affinity_transformer.training.data.load_trainable_records          （读train/valid/test三张表）
+    -> affinity_transformer.training.data.collect_required_embedding_hashes
+    -> affinity_transformer.embeddings.validation.validate_embedding_cache  （antibody、antigen各一次，确认cache跟config里的encoder/revision匹配）
+    -> affinity_transformer.model.factory.build_ranker(config.model, ...)
+         -> affinity_transformer.model.{embedding_ranker, attention, blocks, interaction, heads, pooling, projections}
+         -> 返回 AffinityRanker(nn.Module)
+    -> affinity_transformer.embeddings.store.ShardedEmbeddingStore         （antibody、antigen各一个）
+    -> affinity_transformer.training.loaders.build_cached_train_loader
+         -> affinity_transformer.training.loaders._build_pairs
+              -> affinity_transformer.dataset.pairs.build_pairs
+                   -> affinity_transformer.dataset.pair_sampling.{common, blocks, large_group, two_label, labels, tree, randomized_tree, validation}
+         -> affinity_transformer.dataset.datasets.PairwiseAffinityDataset
+         -> affinity_transformer.training.samplers.GroupShuffleSampler
+         -> affinity_transformer.embeddings.collate.collate_pair_embedding_batch（DataLoader的collate_fn）
+    -> affinity_transformer.training.loaders.build_cached_rank_loader      （valid用，AffinityRecordDataset + collate_embedding_batch）
+    -> affinity_transformer.training.loaders.compute_group_pair_weights    （本轮加的，算group_weights）
+    -> affinity_transformer.trainer.Trainer(model, config, train_loader, valid_loader, ..., group_weights=...)
+    -> trainer.fit()
+         每个epoch:
+           -> trainer._run_train_epoch()
+                -> model.forward(batch.left) / model.forward(batch.right)
+                -> affinity_transformer.model.losses.ranknet_loss(..., weight=...)
+                -> optimizer.step()
+           -> trainer.evaluate(valid_loader)            ←“验证”实际发生在这里，不是独立脚本
+                -> affinity_transformer.metrics.compute_group_spearman
+                -> affinity_transformer.metrics.summarize_group_spearman
+           -> 写 checkpoint_latest.pt / valid_group_metrics_epoch{N}.csv
+    -> trainer.save_checkpoint(...)
+    -> affinity_transformer.training.evaluation.predict_cached_records      ←“测试”（test split）实际发生在这里
+    -> affinity_transformer.training.evaluation.write_split_evaluation
+    -> affinity_transformer.training.artifacts.{write_history, write_metrics, write_resource_metrics, write_run_log, copy_config, write_embedding_metadata_refs}
+```
+
+**这条链上最该核对契约的几个接口**（出问题大概率出在这几处，而不是模块内部逻辑）：
+
+- `config.py`的`DataConfig`/`ModelConfig` ↔ `training/loaders.py`/`training/cached.py`怎么读这些字段——字段名、默认值、是否允许`None`，三处必须一致（附录前面Layer 0已经提过）。
+- `dataset.pairs.build_pairs`返回的`PAIR_COLUMNS`列 ↔ `dataset.datasets.PairwiseAffinityDataset.__getitem__`怎么按列名取值——新加一种`pair_sample_strategy`，只要返回的列名、`y_ij`的取值约定（1.0/0.0，相等时跳过）保持不变，下游就不需要改。
+- `training/loaders.py`里`_build_pairs`和`compute_group_pair_weights`各自调用一次`build_pairs`——两次调用的参数（尤其`seed`）必须完全一致，否则权重和真实喂给模型的pairs集合就对不上（前面质检清单里点过这个）。
+- `Trainer.__init__`的`group_weights`参数 ↔ `_run_train_epoch`里`_batch_group_weights`怎么用它——`None`时必须完全退化成无权重行为，这条退化路径目前没有专门的测试。
+
+### 软件测试阶段（独立于上面"训练内部的验证/测试"，是代码层面的）
+
+```text
+scripts/slurm/smoke_test.sbatch
+  -> pytest -q
+       -> tests/conftest.py（toy_records、FakeTokenizer、FakeEncoder等共享fixture）
+       -> tests/test_*.py（每个文件直接 import 对应的 affinity_transformer 模块，绕过 train.py / CLI，
+                            直接对公开函数喂合成数据断言行为——跟上面训练阶段的调用链是平行的两条路，
+                            不会互相调用）
+```
+
+### 使用阶段
+
+```text
+已训练好的 checkpoint + 对应的训练用 config
+  -> predict.py  或  affinity_transformer.user_entry.AffinityPredictor
+       -> affinity_transformer.config.load_config        （复用训练时的同一份config，保证编码器/结构一致）
+       -> affinity_transformer.trainer.build_model_and_tokenizers
+       -> affinity_transformer.model.AffinityRanker（加载权重）
+       -> affinity_transformer.dataloader.collate_rank_batch
+       -> model.forward -> 打分 -> 排序 -> 输出 OUTPUT_COLUMNS（query_id, antibody_id, score, rank, model_name）
+```
+
+注意这条链走的是`affinity_transformer.trainer.build_model_and_tokenizers`（在线/显式token路径），跟训练阶段`frozen_cached`模式那条线**不是同一个模型构造入口**——这是故意的：推理时要能对任意没见过的候选序列直接打分，不能要求它们提前进过embedding缓存流水线。这一点本身也是个值得在质检里专门确认的契约：训练用`frozen_cached`、推理用`build_model_and_tokenizers`，两条路径构造出来的`AffinityRanker`权重结构必须完全对得上，否则load checkpoint时形状不匹配。

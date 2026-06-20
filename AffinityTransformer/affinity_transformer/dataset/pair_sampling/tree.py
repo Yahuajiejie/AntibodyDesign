@@ -87,6 +87,7 @@ def _balanced_tree_pairs(
     group: pd.DataFrame,
     seed: int,
     extra_random_pairs_per_group: int = 0,
+    add_redundancy_edges: bool = True,
 ) -> list[dict[str, object]]:
     """Build the balanced-tree comparison set for one rankable group.
 
@@ -100,6 +101,16 @@ def _balanced_tree_pairs(
             draw on top of the deterministic tree backbone, deduplicated
             against it and against each other. `0` (default) yields the
             pure deterministic tree.
+        add_redundancy_edges: When `True` (default), append the
+            ancestor-jump and same-depth random edges described in
+            `_add_redundancy_edges` -- fixes leaf under-coverage and gives
+            near-root edges a backup path. Set `False` to emit only the
+            bare `n_records - 1` tree backbone (every leaf has exactly one
+            edge, near-root edges have none): a smaller, faster-to-build
+            comparison set that still keeps the tree's O(log n) diameter,
+            but trades away both the leaf/root robustness `_add_redundancy_edges`
+            exists for and (when layered under `randomized_tree.py`) the
+            epoch-to-epoch resampling diversity it provides.
 
     Returns:
         A list of `_pair_row(...)` dicts, ready to append into the same
@@ -116,7 +127,8 @@ def _balanced_tree_pairs(
     seen: set[tuple[str, str]] = set()
     parent_of: dict[int, int] = {}
     _build_tree_edges(items, 0, len(items), group_id, rows, seen, parent_of)
-    _add_redundancy_edges(items, parent_of, group_id, rows, seen, seed=f"{seed}:{group_id}:redundancy")
+    if add_redundancy_edges:
+        _add_redundancy_edges(items, parent_of, group_id, rows, seen, seed=f"{seed}:{group_id}:redundancy")
 
     if extra_random_pairs_per_group > 0 and len(items) >= 2:
         _add_random_pairs(
@@ -236,9 +248,19 @@ def _add_redundancy_edges(
             _emit_pair(record_id_x, label_x, record_id_a, label_a, group_id, rows, seen)
 
         peers = nodes_by_depth[depth]
-        if len(peers) >= 2:
-            candidates = [p for p in peers if p != index]
-            peer = rng.choice(candidates)
+        k = len(peers)
+        if k >= 2:
+            # Rejection-sample directly on the shared `peers` list instead of
+            # rebuilding a filtered copy on every node: the deepest level of
+            # a balanced tree holds O(n) nodes, so an O(k) rebuild per node
+            # there made this whole pass O(n^2). A collision (drawing your
+            # own index) has probability 1/k <= 1/2, so this costs O(1)
+            # expected draws per node while reproducing the exact same
+            # uniform distribution over the other k-1 peers that
+            # `rng.choice(candidates)` gave.
+            peer = peers[rng.randrange(k)]
+            while peer == index:
+                peer = peers[rng.randrange(k)]
             record_id_p, label_p = items[peer]
             _emit_pair(record_id_x, label_x, record_id_p, label_p, group_id, rows, seen)
 

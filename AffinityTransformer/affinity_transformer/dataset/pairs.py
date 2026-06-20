@@ -59,8 +59,18 @@ def build_pairs(
     discrete_label_unique_threshold: int = _DEFAULT_DISCRETE_LABEL_UNIQUE_THRESHOLD,
     discrete_label_ratio_threshold: float = _DEFAULT_DISCRETE_LABEL_RATIO_THRESHOLD,
     tree_extra_random_pairs_per_group: int = 0,
+    add_redundancy_edges: bool = True,
 ) -> pd.DataFrame:
-    """Build pairwise ranking examples within each group."""
+    """Build pairwise ranking examples within each group.
+
+    `add_redundancy_edges` only affects `pair_sample_strategy in
+    {"balanced_tree", "randomized_bst"}`; it is ignored by every other
+    strategy. See `tree._balanced_tree_pairs` and
+    `randomized_tree._randomized_bst_pairs` for what disabling it trades
+    away (leaf/root coverage, and for `randomized_bst` also per-epoch
+    resampling diversity) versus what it keeps (the tree backbone's
+    O(log n) diameter).
+    """
     required = ("record_id", "group_id", "rank_label", "label_kind", "keep_for_training")
     missing = [c for c in required if c not in records.columns]
     if missing:
@@ -94,12 +104,17 @@ def build_pairs(
                     group,
                     seed=seed,
                     extra_random_pairs_per_group=tree_extra_random_pairs_per_group,
+                    add_redundancy_edges=add_redundancy_edges,
                 )
             )
             continue
 
         if pair_sample_strategy == "randomized_bst":
-            rows.extend(_randomized_bst_pairs(str(group_id), group, seed=seed))
+            rows.extend(
+                _randomized_bst_pairs(
+                    str(group_id), group, seed=seed, add_redundancy_edges=add_redundancy_edges
+                )
+            )
             continue
 
         if _should_enumerate_pairs(group, n_candidates, large_group_threshold, pair_enumeration_limit):

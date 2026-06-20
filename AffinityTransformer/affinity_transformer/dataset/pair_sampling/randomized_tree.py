@@ -56,6 +56,7 @@ def _randomized_bst_pairs(
     group: pd.DataFrame,
     seed: int,
     max_attempts: int = _DEFAULT_MAX_ATTEMPTS,
+    add_redundancy_edges: bool = True,
 ) -> list[dict[str, object]]:
     """Build a randomly-ordered BST's comparison set for one rankable group.
 
@@ -72,7 +73,21 @@ def _randomized_bst_pairs(
             deterministic median tree for this group. Each attempt is
             rejected only if its height exceeds
             `_HEIGHT_SAFETY_FACTOR * log2(n)` -- generous enough that real
-            attempts essentially always pass on the first try.
+            attempts essentially always pass on the first try. This height
+            check (and the fallback it guards) runs regardless of
+            `add_redundancy_edges`, so disabling redundancy edges does not
+            give up the height safety margin.
+        add_redundancy_edges: When `True` (default), append the
+            ancestor-jump and same-depth random edges (see
+            `tree._add_redundancy_edges`) on top of the random insertion
+            backbone. Set `False` to emit only the bare `n_records - 1`
+            insertion-order edges: still the same expected O(log n)
+            diameter (the height check above is unaffected), but every
+            leaf goes back to a single edge, near-root edges lose their
+            backup, and -- since this strategy's only other source of
+            epoch-to-epoch comparison diversity below the tree-shape level
+            was the redundancy step's own random draws -- that diversity
+            is gone too.
 
     Returns:
         A list of `_pair_row(...)` dicts. Ties are skipped, matching every
@@ -104,16 +119,17 @@ def _randomized_bst_pairs(
                     record_id_parent, label_parent, record_id_child, label_child,
                     group_id, rows, seen,
                 )
-            _add_redundancy_edges(
-                items, parent_of, group_id, rows, seen,
-                seed=f"{seed}:{group_id}:{attempt}:redundancy",
-            )
+            if add_redundancy_edges:
+                _add_redundancy_edges(
+                    items, parent_of, group_id, rows, seen,
+                    seed=f"{seed}:{group_id}:{attempt}:redundancy",
+                )
             return rows
 
     # Every random attempt came up pathologically deep (should not happen
     # in practice -- see module docstring). Fall back to the structure that
     # has no failure mode at all.
-    return _balanced_tree_pairs(group_id, group, seed=seed)
+    return _balanced_tree_pairs(group_id, group, seed=seed, add_redundancy_edges=add_redundancy_edges)
 
 
 def _build_random_bst_structure(
