@@ -1,19 +1,23 @@
 #!/usr/bin/env bash
-# Submit the randomized_bst (add_redundancy_edges=false) vs. original
-# (capped_proportional) pair-sampling A/B comparison, frozen-cache deep4
-# model, on real data.
+# Submit the randomized_bst (add_redundancy_edges=false) pair-sampling run,
+# frozen-cache deep4 model, on real data.
 #
-# Both runs share the same IgBert/ESM2 frozen embedding cache (the cache
-# only depends on antibody_encoder/antigen_encoder, which are identical
-# across the two configs) and the same train/valid/test split, so they are
-# submitted in parallel once the cache job finishes -- they do not depend on
-# each other.
+# By default this submits ONLY the new randomized_bst_no_redundancy config --
+# set RUN_BASELINE=1 if you ever want the original (capped_proportional)
+# config submitted alongside it for a fresh side-by-side run (not needed if
+# you already have those numbers from an earlier run).
 #
-#   original (baseline):            configs/v065/v065_deep4_ranknet.yaml
-#                                    pair_sample_strategy: capped_proportional
 #   randomized_bst_no_redundancy:   configs/v065/v065_deep4_randomized_bst_no_redundancy.yaml
 #                                    pair_sample_strategy: randomized_bst
 #                                    add_redundancy_edges: false
+#   original (optional, RUN_BASELINE=1):
+#                                    configs/v065/v065_deep4_ranknet.yaml
+#                                    pair_sample_strategy: capped_proportional
+#
+# Either way this reuses the existing IgBert/ESM2 frozen embedding cache and
+# train/valid/test split (SKIP_G00=1) -- the cache and split only depend on
+# antibody_encoder/antigen_encoder/data split, not on pair_sample_strategy,
+# so nothing needs to be rebuilt for the new config.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -27,6 +31,7 @@ CONFIG_DIR="${CONFIG_DIR:-configs/v065}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/slurm/randomized-bst-no-redundancy-ablation-${RUN_TAG}}"
 
+RUN_BASELINE="${RUN_BASELINE:-0}"
 BASELINE_CONFIG="${CONFIG_DIR}/v065_deep4_ranknet.yaml"
 ABLATION_CONFIG="${CONFIG_DIR}/v065_deep4_randomized_bst_no_redundancy.yaml"
 
@@ -36,7 +41,11 @@ if [[ ! -f "${REVISION_FILE}" ]]; then
   exit 2
 fi
 
-for config in "${BASELINE_CONFIG}" "${ABLATION_CONFIG}"; do
+configs_to_check=("${ABLATION_CONFIG}")
+if [[ "${RUN_BASELINE}" == "1" ]]; then
+  configs_to_check+=("${BASELINE_CONFIG}")
+fi
+for config in "${configs_to_check[@]}"; do
   if [[ ! -f "${config}" ]]; then
     echo "[FATAL] Missing training config: ${config}" >&2
     exit 3
@@ -97,25 +106,34 @@ submit_training() {
     scripts/slurm/run_config.sbatch
 }
 
-# Independent runs -- both depend only on the shared cache, not on each other.
-original="$(submit_training original "${BASELINE_CONFIG}" "${cache}")"
-echo "submitted original (capped_proportional) after cache: ${original}"
-
+# Independent of any baseline run -- depends only on the shared cache.
 randomized_bst_no_redundancy="$(submit_training randomized_bst_no_redundancy "${ABLATION_CONFIG}" "${cache}")"
 echo "submitted randomized_bst_no_redundancy after cache: ${randomized_bst_no_redundancy}"
 
+job_ids="${randomized_bst_no_redundancy}"
+if [[ "${RUN_BASELINE}" == "1" ]]; then
+  original="$(submit_training original "${BASELINE_CONFIG}" "${cache}")"
+  echo "submitted original (capped_proportional) after cache: ${original}"
+  job_ids="${job_ids},${original}"
+fi
+
 echo ""
-echo "randomized_bst-vs-original ablation submitted"
+echo "randomized_bst submitted"
 echo "  setup=login-node (synchronous)"
 echo "  smoke=${smoke}"
 echo "  models=${models}"
 echo "  cache=${cache}"
-echo "  original=${original}                       -> ${OUTPUT_ROOT}/original"
 echo "  randomized_bst_no_redundancy=${randomized_bst_no_redundancy}  -> ${OUTPUT_ROOT}/randomized_bst_no_redundancy"
+if [[ "${RUN_BASELINE}" == "1" ]]; then
+  echo "  original=${original}                       -> ${OUTPUT_ROOT}/original  (RUN_BASELINE=1)"
+fi
 echo "  outputs=${OUTPUT_ROOT}"
 echo ""
-echo "Check progress:        squeue -j ${original},${randomized_bst_no_redundancy}"
-echo "Once both finish, collect both runs' metrics.json into one CSV:"
+echo "Check progress:        squeue -j ${job_ids}"
+echo "Once it finishes, collect metrics.json into a CSV (add your existing"
+echo "original run's metrics.json under the same output-root, or merge the"
+echo "two CSVs afterward, to compare against the original numbers you"
+echo "already have):"
 echo "  python scripts/experiments/collect_results.py \\"
 echo "    --output-root ${OUTPUT_ROOT} \\"
-echo "    --output reports/experiments/randomized_bst_no_redundancy_vs_original-${RUN_TAG}.csv"
+echo "    --output reports/experiments/randomized_bst_no_redundancy-${RUN_TAG}.csv"
