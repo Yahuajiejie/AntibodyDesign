@@ -21,7 +21,11 @@ from .artifacts import (
 )
 from .data import collect_required_embedding_hashes, load_trainable_records
 from .evaluation import predict_cached_records, record_metadata, write_split_evaluation
-from .loaders import build_cached_rank_loader, build_cached_train_loader
+from .loaders import (
+    build_cached_rank_loader,
+    build_cached_train_loader,
+    compute_group_pair_weights,
+)
 
 
 def run_cached_ranknet(
@@ -99,6 +103,7 @@ def run_cached_ranknet(
         ),
         output_dir=output_dir,
         embedding_metadata_hashes=metadata_hashes,
+        group_weights=compute_group_pair_weights(train_records, config),
     )
     uses_cuda = trainer.device.type == "cuda" and torch.cuda.is_available()
     if uses_cuda:

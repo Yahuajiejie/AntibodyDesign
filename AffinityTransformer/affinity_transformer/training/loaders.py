@@ -129,6 +129,39 @@ def build_cached_rank_loader(
     )
 
 
+def compute_group_pair_weights(
+    records: pd.DataFrame, config: Config
+) -> dict[str, float] | None:
+    """Per-pair RankNet loss weight that restores each group's true size.
+
+    `GroupShuffleSampler` yields every row of the `build_pairs` output
+    exactly once per epoch with equal weight, so a group's influence on
+    training is governed purely by how many pairs `_pair_sample_count`
+    actually kept for it -- which saturates at `max_pairs_per_group` for any
+    group whose candidate-pair count already exceeds the proportional
+    target (in practice, any group above roughly a few hundred records).
+    That mismatches `valid_weighted_spearman`, which weights groups by
+    `n_records`. This computes, per `group_id`,
+    `n_records_in_group / n_pairs_sampled_for_group`, then rescales so the
+    pair-count-weighted mean across all groups is 1.0 (keeps the overall
+    loss magnitude comparable to the unweighted case).
+
+    Returns `None` when `config.data.weight_pairs_by_group_size` is False,
+    so callers can pass the result straight to `Trainer(group_weights=...)`
+    without an extra branch.
+    """
+    if not config.data.weight_pairs_by_group_size:
+        return None
+    pairs = _build_pairs(records, config)
+    if pairs.empty:
+        return None
+    n_records = records.groupby("group_id").size()
+    n_pairs = pairs.groupby("group_id").size()
+    raw = (n_records.reindex(n_pairs.index) / n_pairs).astype(float)
+    scale = n_pairs.sum() / (raw * n_pairs).sum()
+    return (raw * scale).to_dict()
+
+
 def _build_pairs(records: pd.DataFrame, config: Config) -> pd.DataFrame:
     return build_pairs(
         records,

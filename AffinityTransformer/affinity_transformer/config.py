@@ -64,6 +64,18 @@ class DataConfig:
             a large group as discrete/repeated-label.
         discrete_label_ratio_threshold: Unique-label ratio threshold for
             treating a large group as discrete/repeated-label.
+        weight_pairs_by_group_size: If True, scale each sampled pair's
+            RankNet loss by `n_records_in_group / n_pairs_sampled_for_group`
+            (normalized to leave the population-level mean weight at 1.0).
+            Without this, `GroupShuffleSampler` gives every sampled pair
+            equal weight, so a group's influence on training is capped at
+            whatever `build_pairs` could sample for it -- for any group
+            whose candidate-pair count already saturates
+            `max_pairs_per_group` (roughly any group above a few hundred
+            records under typical settings), raising the cap or
+            `pair_fraction` stops helping. This flag fixes that by
+            reweighting at the loss instead of chasing it via more pairs.
+            Default False reproduces legacy unweighted behavior.
         seed: Random seed used for pair sampling and any other randomness
             in the data pipeline.
         record_filter: Optional selector applied to `all_records_path` before
@@ -83,6 +95,7 @@ class DataConfig:
     intra_block_pairs_per_large_group: int = 50
     discrete_label_unique_threshold: int = 32
     discrete_label_ratio_threshold: float = 0.05
+    weight_pairs_by_group_size: bool = False
     all_records_path: Path | None = None
     test_path: Path | None = None
     split_strategy: str = "none"
@@ -469,6 +482,7 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
         ),
         discrete_label_unique_threshold=int(section.get("discrete_label_unique_threshold", 32)),
         discrete_label_ratio_threshold=float(section.get("discrete_label_ratio_threshold", 0.05)),
+        weight_pairs_by_group_size=bool(section.get("weight_pairs_by_group_size", False)),
         all_records_path=all_records_path,
         test_path=test_path,
         split_strategy=split_strategy,

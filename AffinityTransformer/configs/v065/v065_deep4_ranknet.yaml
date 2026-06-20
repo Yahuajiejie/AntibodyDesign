@@ -11,6 +11,7 @@ data:
   pair_sample_strategy: capped_proportional
   pair_fraction: 0.01
   min_pairs_per_group: 200
+  weight_pairs_by_group_size: true
   seed: 0
 
 model:

@@ -168,6 +168,7 @@ class Trainer:
         embedding_metadata_hashes: Mapping[str, str] | None = None,
         log_every_n_steps: int = 50,
         eval_log_every_n_batches: int = 100,
+        group_weights: Mapping[str, float] | None = None,
     ) -> None:
         """Build a `Trainer` around an already-constructed model.
 
@@ -206,6 +207,15 @@ class Trainer:
                 `early_stopping_patience` is `None` or `valid_dataloader` is
                 `None`.
 
+            group_weights: Optional `group_id -> weight` map applied to each
+                pair's RankNet loss (e.g. from
+                `training.loaders.compute_group_pair_weights`), used to
+                restore a group's true `n_records` influence on training
+                when `build_pairs` had to cap how many pairs it could sample
+                for that group. A pair whose `group_id` is missing from the
+                map falls back to weight 1.0. `None` (default) disables
+                weighting and reproduces the unweighted mean loss.
+
         Raises:
             ValueError: If `valid_record_metadata` is given but missing any
                 of `record_id, dataset_id, label_kind`.
@@ -239,6 +249,7 @@ class Trainer:
         self.history: list[dict[str, float]] = []
         self.log_every_n_steps = log_every_n_steps
         self.eval_log_every_n_batches = eval_log_every_n_batches
+        self._group_weights = None if group_weights is None else dict(group_weights)
 
     def fit(self) -> None:
         """Run the full training loop (spec §5.7 rules 3 and 6).
@@ -319,6 +330,22 @@ class Trainer:
                     )
                     break
 
+    def _batch_group_weights(
+        self, group_ids: list[str], reference: torch.Tensor
+    ) -> torch.Tensor | None:
+        """Look up `self._group_weights` for one batch's pairs, or None.
+
+        `group_ids` is `batch.left.group_ids` -- one entry per pair, in
+        batch order (left/right share a `group_id` since pairs never cross
+        groups). A `group_id` absent from `self._group_weights` (e.g. a
+        group with zero sampled pairs, which can't happen, or a stale map)
+        falls back to weight 1.0 rather than raising.
+        """
+        if self._group_weights is None:
+            return None
+        values = [self._group_weights.get(gid, 1.0) for gid in group_ids]
+        return torch.tensor(values, dtype=reference.dtype, device=reference.device)
+
     def _run_train_epoch(self, epoch: int) -> float:
         """Run one training epoch over `train_dataloader`.
 
@@ -353,11 +380,13 @@ class Trainer:
             ):
                 score_i = self.model(batch.left)
                 score_j = self.model(batch.right)
+                weight = self._batch_group_weights(batch.left.group_ids, score_i)
                 loss = ranknet_loss(
                     score_i,
                     score_j,
                     batch.y_ij,
                     sigma=self.config.model.objective.sigma,
+                    weight=weight,
                 )
 
             if torch.isnan(loss):

@@ -34,6 +34,7 @@ def ranknet_loss(
     score_j: torch.Tensor,
     y_ij: torch.Tensor,
     sigma: float = 1.0,
+    weight: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute the RankNet binary cross-entropy loss from score differences.
 
@@ -44,6 +45,12 @@ def ranknet_loss(
         y_ij: Float targets where 1 means item i should rank above item j and
             0 means the reverse.
         sigma: Positive scale applied to the score difference.
+        weight: Optional per-pair loss weight, shape-compatible with
+            ``score_i``. Used to rebalance a pair's contribution toward its
+            source group's true size when `build_pairs` had to cap the
+            number of pairs sampled from that group well below its candidate
+            count. ``None`` reproduces the unweighted mean (legacy
+            behavior).
 
     Returns:
         Scalar mean loss.
@@ -52,7 +59,7 @@ def ranknet_loss(
     ``binary_cross_entropy_with_logits``.
     """
     logits = sigma * (score_i - score_j)
-    return F.binary_cross_entropy_with_logits(logits, y_ij)
+    return F.binary_cross_entropy_with_logits(logits, y_ij, weight=weight)
 
 
 def listnet_loss(

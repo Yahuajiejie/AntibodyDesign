@@ -8,7 +8,11 @@ from ..config import Config
 from ..trainer import Trainer, build_model_and_tokenizers
 from .artifacts import copy_config, write_history, write_metrics, write_run_log
 from .evaluation import predict_online_records, record_metadata, write_split_evaluation
-from .loaders import build_online_rank_loader, build_online_train_loader
+from .loaders import (
+    build_online_rank_loader,
+    build_online_train_loader,
+    compute_group_pair_weights,
+)
 
 
 def run_online_training(
@@ -36,6 +40,7 @@ def run_online_training(
             None if valid_records is None else record_metadata(valid_records)
         ),
         output_dir=output_dir,
+        group_weights=compute_group_pair_weights(train_records, config),
     )
     trainer.fit()
     trainer.save_checkpoint(output_dir / "checkpoint.pt")
