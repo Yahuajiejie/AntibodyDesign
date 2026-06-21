@@ -21,10 +21,12 @@
 # into the four config files (noise_aware_extra_edges_per_record=2,
 # noise_aware_max_degree=12, noise_aware_add_anchor_redundancy=false).
 #
-# The four training jobs are submitted as a sequential afterok chain
-# (concat -> deep4 -> deep8 -> deep16), same as the other chains -- this is
-# just to avoid four big GPU jobs competing for the partition at once, there
-# is no weight transfer between them.
+# The four training jobs (concat, deep4, deep8, deep16) each depend only on
+# the shared embedding cache and are submitted in parallel -- there is no
+# weight transfer or other real dependency between them, so (unlike the
+# older chain scripts this one was templated from) they are not serialized
+# against each other. This uses up to 4 GPU allocations at once; set
+# SKIP_CONCAT=1 to drop to 3 if quota is tight.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -111,22 +113,22 @@ submit_training() {
 
 if [[ "${SKIP_CONCAT:-0}" == "1" ]]; then
   concat="skipped"
-  deep4_dependency="${cache}"
   echo "skipping concat (SKIP_CONCAT=1)"
 else
   concat="$(submit_training concat "${CONFIG_DIR}/v065_concat_noise_aware_multiscale.yaml" "${cache}")"
-  deep4_dependency="${concat}"
   echo "submitted concat after cache: ${concat}"
 fi
 
-deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_noise_aware_multiscale.yaml" "${deep4_dependency}")"
-echo "submitted deep4 after ${deep4_dependency}: ${deep4}"
+# deep4/deep8/deep16 each depend only on the shared cache, not on each
+# other or on concat -- submitted in parallel.
+deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_noise_aware_multiscale.yaml" "${cache}")"
+echo "submitted deep4 after cache: ${deep4}"
 
-deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_noise_aware_multiscale.yaml" "${deep4}")"
-echo "submitted deep8 after deep4: ${deep8}"
+deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_noise_aware_multiscale.yaml" "${cache}")"
+echo "submitted deep8 after cache: ${deep8}"
 
-deep16="$(submit_training deep16 "${CONFIG_DIR}/v065_deep16_noise_aware_multiscale.yaml" "${deep8}")"
-echo "submitted deep16 after deep8: ${deep16}"
+deep16="$(submit_training deep16 "${CONFIG_DIR}/v065_deep16_noise_aware_multiscale.yaml" "${cache}")"
+echo "submitted deep16 after cache: ${deep16}"
 
 echo ""
 echo "noise_aware_multiscale chain submitted"

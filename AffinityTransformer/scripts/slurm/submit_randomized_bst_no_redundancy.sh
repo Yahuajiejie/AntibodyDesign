@@ -16,10 +16,10 @@
 # split, not on pair_sample_strategy, so SKIP_G00=1 reuses them instead of
 # rebuilding anything.
 #
-# The four training jobs are submitted as a sequential afterok chain
-# (concat -> deep4 -> deep8 -> deep16), same as the original chain script --
-# this is just to avoid four big GPU jobs competing for the partition at
-# once, there is no weight transfer between them.
+# The four training jobs (concat, deep4, deep8, deep16) each depend only on
+# the shared embedding cache and are submitted in parallel -- there is no
+# weight transfer or other real dependency between them. This uses up to 4
+# GPU allocations at once; set SKIP_CONCAT=1 to drop to 3 if quota is tight.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -106,22 +106,23 @@ submit_training() {
 
 if [[ "${SKIP_CONCAT:-0}" == "1" ]]; then
   concat="skipped"
-  deep4_dependency="${cache}"
   echo "skipping concat (SKIP_CONCAT=1)"
 else
   concat="$(submit_training concat "${CONFIG_DIR}/v065_concat_randomized_bst_no_redundancy.yaml" "${cache}")"
-  deep4_dependency="${concat}"
   echo "submitted concat after cache: ${concat}"
 fi
 
-deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_randomized_bst_no_redundancy.yaml" "${deep4_dependency}")"
-echo "submitted deep4 after ${deep4_dependency}: ${deep4}"
+# deep4/deep8/deep16 each depend only on the shared cache, not on each
+# other or on concat (no weight transfer between them) -- submitted in
+# parallel rather than serialized.
+deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_randomized_bst_no_redundancy.yaml" "${cache}")"
+echo "submitted deep4 after cache: ${deep4}"
 
-deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_randomized_bst_no_redundancy.yaml" "${deep4}")"
-echo "submitted deep8 after deep4: ${deep8}"
+deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_randomized_bst_no_redundancy.yaml" "${cache}")"
+echo "submitted deep8 after cache: ${deep8}"
 
-deep16="$(submit_training deep16 "${CONFIG_DIR}/v065_deep16_randomized_bst_no_redundancy.yaml" "${deep8}")"
-echo "submitted deep16 after deep8: ${deep16}"
+deep16="$(submit_training deep16 "${CONFIG_DIR}/v065_deep16_randomized_bst_no_redundancy.yaml" "${cache}")"
+echo "submitted deep16 after cache: ${deep16}"
 
 echo ""
 echo "randomized_bst_no_redundancy chain submitted"
