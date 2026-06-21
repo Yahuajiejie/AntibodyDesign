@@ -54,9 +54,9 @@ def run_cached_ranknet(
             f"{interaction_kind} frozen_cached training requires model.antigen_encoder"
         )
 
-    train_records = load_trainable_records(train_path)
-    valid_records = None if valid_path is None else load_trainable_records(valid_path)
-    test_records = None if test_path is None else load_trainable_records(test_path)
+    train_records = load_trainable_records(train_path, config)
+    valid_records = None if valid_path is None else load_trainable_records(valid_path, config)
+    test_records = None if test_path is None else load_trainable_records(test_path, config)
     required_hashes = collect_required_embedding_hashes(
         records
         for records in (train_records, valid_records, test_records)

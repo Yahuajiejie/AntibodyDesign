@@ -16,7 +16,7 @@
 
 每一层给出：变化范围（行数）、为什么要重新看、看的时候具体盯哪里、用什么`git diff`命令把质检范围缩小到真正变化的部分。
 
-**质检范围**：本文档覆盖 `debug000` ~ `debug009`（12个commit，52个文件，+1376/-328行）相对于你上次质检基线的全部改动。本轮会话里还有一批**尚未提交**的改动（树形/堆/随机BST采样结构），单独列在第8层，不要跟前面混在一起看。
+**质检范围**：本文档覆盖 `debug000` ~ `debug009`（12个commit，52个文件，+1376/-328行）相对于你上次质检基线的全部改动。本轮会话里还有两批**尚未提交**的改动：树形/堆/随机BST采样结构在第8层，`noise_aware_multiscale`（多尺度噪声感知采样+tau注册表）在第9层——两批是先后两次会话做的，互相独立，不要混在一起看。
 
 ---
 
@@ -66,7 +66,7 @@
     3. `checkpoint_latest.pt`按epoch保存的逻辑跟"NaN loss报错保存error_context"这两条路径有没有冲突（比如NaN发生在保存checkpoint之后还是之前，会不会留下一个对应checkpoint的脏状态）。
     4. `valid_group_metrics_epoch{N}.csv`的导出会不会在`output_dir`很大、组数很多时显著拖慢每个epoch的eval阶段。
   - 命令：`git diff a17dd18 d765a17 -- affinity_transformer/trainer.py`
-- [x] `affinity_transformer/training/samplers.py` 🆕 整个文件新增，44行（`GroupShuffleSampler`）
+- [ ] `affinity_transformer/training/samplers.py` 🆕 整个文件新增，44行（`GroupShuffleSampler`）
   - 看什么：这是控制"每个组内的pair会不会被打散到不同batch"的关键逻辑——确认`__len__`跟`__iter__`实际产出的数量一致（`DataLoader`依赖`__len__`算总step数，算错会导致进度条/早停逻辑基于错误的总数判断）。
 - [ ] `affinity_transformer/training/cross_validation.py` 🆕 整个文件新增，131行
   - 看什么：这个模块现在没有任何v065配置启用它（`cross_validation.enabled: false`），但必须确认`run_training`里的dispatch分支万无一失——如果有人手滑把某个yaml的`enabled`改成`true`，会不会因为`all_records_path`缺失或其他前提没满足而在跑了很久之后才报错（理想情况应该在`load_config`阶段就快速失败，而不是等数据加载完才发现配置不对）。
@@ -118,6 +118,52 @@
 命令：`git diff` （工作区相对于`d765a17`的全部未提交改动）
 
 这一批目前**没有接入任何v065 yaml配置**（四个配置文件仍是`pair_sample_strategy: capped_proportional`），纯属新增、未启用，质检通过后才建议考虑要不要在某个配置上切换试跑，不要在还没验证reweight效果之前就一起提交进同一个commit。
+
+---
+
+## Layer 9：本轮会话尚未提交的改动（noise_aware_multiscale + tau registry，单独验收）
+
+这一层接在Layer 8之后——如果Layer 8那批`tree.py`/`randomized_tree.py`已经提交，这里的`git diff`基线请换成那次提交后的hash；这个沙箱看不到git，下面的命令里基线hash都留了占位符`<BASELINE>`，自己核对替换。
+
+背景一句话：`randomized_bst`/`balanced_tree`在密集大组里会选出标签差小到跟测量噪声分不清的比较对（`docs/experiments/noise_floor_tree_analysis.md`记录了诊断过程），`noise_aware_multiscale`是这轮的修法；中途还经历了一个失败的原型（`noise_floor_tree.py`，单链聚类会把密集组串成一个簇），看的时候要分清"现在生效的是哪一版"。
+
+- [ ] `affinity_transformer/dataset/pair_sampling/noise_aware_multiscale.py` 🆕 整个文件新增，约300行（核心算法）
+  - 看什么，按风险从高到低：
+    1. `_build_tau_separated_anchors`——确认比较的是"当前点 vs 当前锚点"，不是"当前点 vs 上一个点"。后者（单链聚类）正是`noise_floor_tree.py`那个失败原型的bug：密集区会被一路串成一个簇。这是这个文件存在的全部理由，如果这一行写错，整个模块的设计目的就落空了。
+    2. `_choose_degree_balanced_partner`的`max_degree`参数——coverage阶段必须传`None`（永不因度数拒绝一个本来能连上的partner，否则违反"存在可辨认partner就必须连上"的目标），enrichment阶段必须传一个真实数值（硬上限，超了就放弃这条边，否则又会退化成度数集中）。这两个调用点的`max_degree`传参容易看混。
+    3. `_stable_second_band`——必须用`hashlib`而不是Python内置`hash()`。内置`hash()`对字符串的结果默认按进程随机化（`PYTHONHASHSEED`），同样的seed换一个进程跑会得到不同结果，悄悄破坏"相同seed必须复现"这条契约，而且不会报错，只会在"重新跑一次结果不一样"的时候才被发现。
+    4. `_has_any_resolvable_partner`——确认它是用排序后的首尾两个极值做O(1)判断，不是真的去遍历找一遍；如果改成了遍历，单条记录的判断会变成O(n)，整组就退化回O(n²)。
+  - 命令：`git diff <BASELINE> -- affinity_transformer/dataset/pair_sampling/noise_aware_multiscale.py`
+- [ ] `affinity_transformer/dataset/pair_sampling/tau_registry.py` 🆕 整个文件新增，约150行
+  - 看什么：`_RULES`元组里的正则规则有没有互相重叠——比如`SARS_CoV_2`精确匹配和`SARS_CoV_2_.+`前缀匹配理论上不会同时命中同一个`antigen_key`，但如果以后有人往`_RULES`里加新规则、又没注意顺序，`resolve_tau_for_group`是按列表顺序`pattern.match`后第一个命中就返回，规则顺序变了结果就可能变。另外确认`resolve_tau_for_group`对"一个group里出现多个不同`antigen_key`"这种异常输入是真的抛错，不是默默取第一个——这是质检脚本里最容易漏测的边界情况。
+  - 命令：`git diff <BASELINE> -- affinity_transformer/dataset/pair_sampling/tau_registry.py`
+- [ ] `affinity_transformer/dataset/pair_sampling/noise_floor_tree.py` 🗑 内容清空，只留说明（之前的失败原型）
+  - 看什么：确认`__init__.py`/`pairs.py`/`validation.py`/`config.py`里没有任何地方还在`import`这个文件——`grep -rn "noise_floor_tree" affinity_transformer/`应该只剩这个文件自己。沙箱权限没法真删这个文件，只清空了内容，正式仓库里如果能删就直接删掉，不用保留这个空文件。
+- [ ] `affinity_transformer/dataset/pair_sampling/__init__.py` 🔧 +4行（新增两个导出）
+  - 命令：`git diff <BASELINE> -- affinity_transformer/dataset/pair_sampling/__init__.py`
+- [ ] `affinity_transformer/dataset/pairs.py` 🔧 +约40行（`build_pairs`新增`noise_aware_multiscale`分支）
+  - 看什么：`antigen_key`列缺失时的报错检查是在`_validate_pair_sampling`之前还是之后——必须在之前，否则一个同时缺`antigen_key`又传了别的非法参数的调用，会先报出无关的校验错误，把真正缺列这个更根本的问题盖住。
+  - 命令：`git diff <BASELINE> -- affinity_transformer/dataset/pairs.py`
+- [ ] `affinity_transformer/dataset/pair_sampling/validation.py` 🔧 +约25行（5个`noise_aware_*`参数校验+1个新策略名）
+  - 命令：`git diff <BASELINE> -- affinity_transformer/dataset/pair_sampling/validation.py`
+- [ ] `affinity_transformer/config.py` 🔧 +约45行（6个`noise_aware_*`字段）
+  - 看什么：跟Layer 0说的一样的"三处必须一致"检查——dataclass默认值、`_build_data_config`里的`section.get(key, default)`、`_validate_pair_sampling`的校验范围，这次新增的6个字段也要过一遍这三处。
+  - 命令：`git diff <BASELINE> -- affinity_transformer/config.py`
+- [ ] `affinity_transformer/training/loaders.py` 🔧 +6行（`_build_pairs`透传6个新参数）
+  - 命令：`git diff <BASELINE> -- affinity_transformer/training/loaders.py`
+- [ ] `configs/v065/v065_{concat,deep4,deep8,deep16}_noise_aware_multiscale.yaml` 🆕 4个新文件
+  - 看什么：跟Layer 6一样，四个文件之间`diff`一下，确认只有`interaction.kind`/`num_layers`不同，`data:`整段（尤其6个`noise_aware_*`字段）四个文件必须完全一致。
+- [ ] `scripts/slurm/submit_noise_aware_multiscale.sh` 🆕 + `submit_v065_training_chain.sh`、`submit_randomized_bst_no_redundancy.sh` 🔧（这两个把串行改成了并行）
+  - 看什么：三个脚本里`concat`/`deep4`/`deep8`/`deep16`四个`submit_training`调用的`dependency`参数是不是都改成了`${cache}`，不要有漏改成`${concat}`/`${deep4}`/`${deep8}`的（漏改一处就会悄悄退回串行，不报错，只是跑得比预期慢）。
+  - 命令：`git diff <BASELINE> -- scripts/slurm/submit_noise_aware_multiscale.sh scripts/slurm/submit_v065_training_chain.sh scripts/slurm/submit_randomized_bst_no_redundancy.sh`
+- [ ] `tests/test_noise_aware_multiscale.py` 🆕（规格§13的9个测试） + `tests/test_dataset.py` 🔧（`build_pairs`接入相关的3个测试）
+  - 看什么：带着"这个测试如果把`_build_tau_separated_anchors`改回单链聚类规则，会不会失败"去读密集链不坍缩那个测试——如果改回去还能通过，说明这个测试没真的锁住这个文件存在的核心理由。
+  - 命令：`git diff <BASELINE> -- tests/test_noise_aware_multiscale.py tests/test_dataset.py`
+- [ ] `docs/experiments/tau_registry.md` 🆕、`docs/qa_progress.md` 🔧（这两份是文档，不影响代码行为，质检优先级最低，确认内容跟代码对得上即可）
+
+命令（这一整层一次性看）：`git diff <BASELINE> -- affinity_transformer/dataset/pair_sampling/ affinity_transformer/dataset/pairs.py affinity_transformer/config.py affinity_transformer/training/loaders.py configs/v065/*noise_aware_multiscale.yaml scripts/slurm/submit_noise_aware_multiscale.sh tests/test_noise_aware_multiscale.py`
+
+这一批目前**也没有接入任何已经在跑的v065默认配置**（只有新增的`*_noise_aware_multiscale.yaml`四个文件用它，已有的`*_ranknet.yaml`/`*_randomized_bst_no_redundancy.yaml`都没改`pair_sample_strategy`），跟Layer 8一样是新增、未替换已有路径，质检通过后再考虑要不要提交+上机跑。
 
 ---
 

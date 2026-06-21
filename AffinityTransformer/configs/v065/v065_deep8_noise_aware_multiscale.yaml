@@ -27,6 +27,18 @@ data:
   noise_aware_unresolved_policy: skip
   weight_pairs_by_group_size: false
   seed: 0
+  # engelhart2022dataset/scFv-SARS-CoV-2_affinity (352,139 records) and
+  # li2023machine/affinity1+affinity2 (747,501 records, combined) are all
+  # ML-model-predicted affinity scores for designed-but-never-measured
+  # antibodies (label_kind=predicted, metric_unit="predicted score
+  # (dimensionless)") -- not real lab measurements, and not on the same
+  # scale as the neg_log10_kd_M values tau_registry.py was researched
+  # against. Excluded rather than guessing a tau for them; see the
+  # conversation around 2026-06-22 for how this was found (a 332,800-pair
+  # contiguous stretch of this exact group is what was pinning the concat
+  # model's loss near ln(2)).
+  filter:
+    exclude_label_kinds: [predicted]
 
 model:
   antibody_encoder:

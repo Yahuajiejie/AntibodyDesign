@@ -51,9 +51,25 @@ def resolve_data_paths(config: Config) -> tuple[Path, Path | None, Path | None]:
     )
 
 
-def load_trainable_records(path: Path) -> pd.DataFrame:
-    """Load one processed split and reject an empty trainable view."""
+def load_trainable_records(path: Path, config: Config) -> pd.DataFrame:
+    """Load one processed split, apply `config.data.record_filter`, and
+    reject an empty trainable view.
+
+    `resolve_data_paths` only applies `config.data.record_filter` in
+    automatic-split mode (it builds `filtered_records.parquet` once, before
+    splitting). In explicit-path mode (`split_strategy="none"`, what every
+    `configs/v065/*.yaml` uses), nothing previously applied the filter at
+    all -- this is the one place every split (train/valid/test) actually
+    gets loaded for `frozen_cached` training, so applying it here makes
+    `record_filter` work the same way regardless of which mode built the
+    split, instead of only working for one of the two.
+    """
     records = filter_trainable_records(load_records(path))
+    if not config.data.record_filter.is_empty():
+        filtered = filter_records(records, config.data.record_filter)
+        if filtered.empty:
+            raise ValueError(f"data.filter removed every trainable record from {path}")
+        records = filtered
     if records.empty:
         raise ValueError(f"No trainable records found in {path}")
     return records

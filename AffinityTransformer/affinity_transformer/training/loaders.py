@@ -22,7 +22,21 @@ from ..embeddings import (
     collate_embedding_batch,
     collate_pair_embedding_batch,
 )
+from ..record_filter import filter_records
 from .samplers import GroupShuffleSampler
+
+
+def _load_trainable_records_for_loader(path: Path, config: Config) -> pd.DataFrame:
+    """Shared by the online-mode loaders below; see `training.data.load_trainable_records`
+    for why this also applies `config.data.record_filter` (explicit-path mode
+    never went through that filter otherwise)."""
+    records = filter_trainable_records(load_records(path))
+    if not config.data.record_filter.is_empty():
+        filtered = filter_records(records, config.data.record_filter)
+        if filtered.empty:
+            raise ValueError(f"data.filter removed every trainable record from {path}")
+        records = filtered
+    return records
 
 
 def build_online_train_loader(
@@ -31,7 +45,7 @@ def build_online_train_loader(
     antibody_tokenizer: Tokenizer,
     antigen_tokenizer: Tokenizer | None,
 ) -> tuple[pd.DataFrame, DataLoader]:
-    records = filter_trainable_records(load_records(path))
+    records = _load_trainable_records_for_loader(path, config)
     pairs = _build_pairs(records, config)
     if pairs.empty:
         raise ValueError(f"No trainable pairs could be built from {path}")
@@ -61,7 +75,7 @@ def build_online_rank_loader(
 ) -> tuple[pd.DataFrame | None, DataLoader | None]:
     if path is None:
         return None, None
-    records = filter_trainable_records(load_records(path))
+    records = _load_trainable_records_for_loader(path, config)
     nw = config.train.num_workers
     loader = DataLoader(
         AffinityRecordDataset(records),
