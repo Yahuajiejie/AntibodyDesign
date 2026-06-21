@@ -10,12 +10,14 @@ import pandas as pd
 from .pair_sampling import (
     _balanced_tree_pairs,
     _candidate_pair_count,
+    _noise_aware_multiscale_pairs,
     _pair_row,
     _pair_sample_count,
     _randomized_bst_pairs,
     _sample_large_group_pairs,
     _should_enumerate_pairs,
     _validate_pair_sampling,
+    resolve_tau_for_group,
 )
 from .records import filter_trainable_records
 from .schema import (
@@ -60,6 +62,12 @@ def build_pairs(
     discrete_label_ratio_threshold: float = _DEFAULT_DISCRETE_LABEL_RATIO_THRESHOLD,
     tree_extra_random_pairs_per_group: int = 0,
     add_redundancy_edges: bool = True,
+    noise_aware_extra_edges_per_record: int = 2,
+    noise_aware_max_degree: int = 12,
+    noise_aware_candidate_probe_count: int = 8,
+    noise_aware_add_anchor_redundancy: bool = False,
+    noise_aware_default_tau: float = 0.2,
+    noise_aware_unresolved_policy: str = "skip",
 ) -> pd.DataFrame:
     """Build pairwise ranking examples within each group.
 
@@ -70,11 +78,29 @@ def build_pairs(
     away (leaf/root coverage, and for `randomized_bst` also per-epoch
     resampling diversity) versus what it keeps (the tree backbone's
     O(log n) diameter).
+
+    The `noise_aware_*` parameters only affect
+    `pair_sample_strategy="noise_aware_multiscale"`; see
+    `noise_aware_multiscale._noise_aware_multiscale_pairs` for what each one
+    controls. Unlike the other strategies, this one does not take a single
+    `tau` directly -- each group's `tau` is looked up from
+    `tau_registry.resolve_tau_for_group` via its `antigen_key` (see
+    `docs/experiments/tau_registry.md`), falling back to
+    `noise_aware_default_tau` for any source that registry doesn't
+    recognize.
     """
-    required = ("record_id", "group_id", "rank_label", "label_kind", "keep_for_training")
+    required = (
+        "record_id", "group_id", "rank_label", "label_kind", "keep_for_training",
+    )
     missing = [c for c in required if c not in records.columns]
     if missing:
         raise ValueError(f"records is missing required column(s): {missing}")
+    if pair_sample_strategy == "noise_aware_multiscale" and "antigen_key" not in records.columns:
+        raise ValueError(
+            "records is missing required column 'antigen_key' "
+            "(required by pair_sample_strategy='noise_aware_multiscale' to "
+            "resolve each group's tau via tau_registry.resolve_tau_for_group)"
+        )
     _validate_pair_sampling(
         max_pairs_per_group,
         pair_sample_strategy,
@@ -87,6 +113,11 @@ def build_pairs(
         discrete_label_unique_threshold,
         discrete_label_ratio_threshold,
         tree_extra_random_pairs_per_group,
+        noise_aware_extra_edges_per_record,
+        noise_aware_max_degree,
+        noise_aware_candidate_probe_count,
+        noise_aware_default_tau,
+        noise_aware_unresolved_policy,
     )
 
     trainable = filter_trainable_records(records)
@@ -113,6 +144,25 @@ def build_pairs(
             rows.extend(
                 _randomized_bst_pairs(
                     str(group_id), group, seed=seed, add_redundancy_edges=add_redundancy_edges
+                )
+            )
+            continue
+
+        if pair_sample_strategy == "noise_aware_multiscale":
+            tau, _rule_label, _basis = resolve_tau_for_group(
+                group, default_tau=noise_aware_default_tau
+            )
+            rows.extend(
+                _noise_aware_multiscale_pairs(
+                    str(group_id),
+                    group,
+                    seed=seed,
+                    tau=tau,
+                    extra_edges_per_record=noise_aware_extra_edges_per_record,
+                    max_degree=noise_aware_max_degree,
+                    candidate_probe_count=noise_aware_candidate_probe_count,
+                    add_anchor_redundancy=noise_aware_add_anchor_redundancy,
+                    unresolved_policy=noise_aware_unresolved_policy,
                 )
             )
             continue

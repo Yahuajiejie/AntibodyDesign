@@ -499,6 +499,48 @@ def test_build_pairs_rejects_dropped_heap_array_strategy(toy_records):
         build_pairs(toy_records, max_pairs_per_group=10, seed=0, pair_sample_strategy="heap_array")
 
 
+def test_build_pairs_noise_aware_multiscale_basic_properties():
+    n = 500
+    records = _large_continuous_records(n)  # antigen_key="agLarge" -> unmatched -> default_tau
+
+    pairs = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="noise_aware_multiscale", noise_aware_default_tau=0.2,
+    )
+
+    assert not (pairs["label_i"] == pairs["label_j"]).any()
+    for label_i, label_j in zip(pairs["label_i"], pairs["label_j"]):
+        assert abs(label_i - label_j) >= 0.2 - 1e-9
+    # backbone + coverage (<= n-1) + enrichment (<= extra_edges_per_record * n, default 2)
+    assert len(pairs) <= n - 1 + 2 * n
+
+    pairs_again = build_pairs(
+        records, max_pairs_per_group=10**9, seed=0,
+        pair_sample_strategy="noise_aware_multiscale", noise_aware_default_tau=0.2,
+    )
+    pd.testing.assert_frame_equal(pairs, pairs_again)  # deterministic for a fixed seed
+
+
+def test_build_pairs_noise_aware_multiscale_requires_antigen_key_column():
+    n = 50
+    records = _large_continuous_records(n).drop(columns=["antigen_key"])
+    with pytest.raises(ValueError, match="antigen_key"):
+        build_pairs(records, max_pairs_per_group=10**9, seed=0, pair_sample_strategy="noise_aware_multiscale")
+
+
+def test_build_pairs_noise_aware_multiscale_rejects_bad_params(toy_records):
+    with pytest.raises(ValueError, match="noise_aware_max_degree"):
+        build_pairs(
+            toy_records, max_pairs_per_group=10, seed=0,
+            pair_sample_strategy="noise_aware_multiscale", noise_aware_max_degree=0,
+        )
+    with pytest.raises(ValueError, match="noise_aware_unresolved_policy"):
+        build_pairs(
+            toy_records, max_pairs_per_group=10, seed=0,
+            pair_sample_strategy="noise_aware_multiscale", noise_aware_unresolved_policy="soft",
+        )
+
+
 def test_build_pairs_large_imbalanced_binary_group_samples_across_classes(monkeypatch):
     records = _large_binary_records(n_negative=5_000, n_positive=10)
 

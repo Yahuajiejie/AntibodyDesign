@@ -178,4 +178,10 @@ def _build_pairs(records: pd.DataFrame, config: Config) -> pd.DataFrame:
         discrete_label_ratio_threshold=config.data.discrete_label_ratio_threshold,
         tree_extra_random_pairs_per_group=config.data.tree_extra_random_pairs_per_group,
         add_redundancy_edges=config.data.add_redundancy_edges,
+        noise_aware_extra_edges_per_record=config.data.noise_aware_extra_edges_per_record,
+        noise_aware_max_degree=config.data.noise_aware_max_degree,
+        noise_aware_candidate_probe_count=config.data.noise_aware_candidate_probe_count,
+        noise_aware_add_anchor_redundancy=config.data.noise_aware_add_anchor_redundancy,
+        noise_aware_default_tau=config.data.noise_aware_default_tau,
+        noise_aware_unresolved_policy=config.data.noise_aware_unresolved_policy,
     )

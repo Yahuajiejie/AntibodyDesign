@@ -97,6 +97,38 @@ class DataConfig:
             `"randomized_bst"`) the redundancy step's own resampled edges
             -- the only other source of epoch-to-epoch diversity below the
             tree-shape level -- are gone too.
+        noise_aware_extra_edges_per_record: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. How many extra
+            multi-scale (near/medium/far) edges to add per record on top of
+            the anchor backbone/coverage edge. `0` isolates "did replacing
+            the coverage backbone alone help" as an ablation.
+        noise_aware_max_degree: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. Soft cap during
+            coverage (never blocks a record's only resolvable partner),
+            hard cap during enrichment (an edge that would exceed it is
+            skipped). Keeps any single record from absorbing a
+            disproportionate share of comparisons in a dense group.
+        noise_aware_candidate_probe_count: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. How many
+            candidate indices to sample per label-band search when picking
+            a partner -- never materializes the full candidate interval.
+        noise_aware_add_anchor_redundancy: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. Whether to
+            apply `tree._add_redundancy_edges` to the anchor-level backbone
+            on top of multi-scale enrichment. Default `False` so a first
+            round of ablations isn't confounded by two redundancy
+            mechanisms stacked together.
+        noise_aware_default_tau: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. Fallback `tau`
+            for any group whose `antigen_key` doesn't match a rule in
+            `tau_registry.py` (see `docs/experiments/tau_registry.md`) --
+            every recognized source's `tau` comes from that hardcoded,
+            literature-grounded registry instead, not from this config
+            field.
+        noise_aware_unresolved_policy: Only used when
+            `pair_sample_strategy="noise_aware_multiscale"`. Only `"skip"`
+            is implemented; see `noise_aware_multiscale.py`'s module
+            docstring for why soft labels are deliberately deferred.
         weight_pairs_by_group_size: If True, scale each sampled pair's
             RankNet loss by `n_records_in_group / n_pairs_sampled_for_group`
             (normalized to leave the population-level mean weight at 1.0).
@@ -130,6 +162,12 @@ class DataConfig:
     discrete_label_ratio_threshold: float = 0.05
     tree_extra_random_pairs_per_group: int = 0
     add_redundancy_edges: bool = True
+    noise_aware_extra_edges_per_record: int = 2
+    noise_aware_max_degree: int = 12
+    noise_aware_candidate_probe_count: int = 8
+    noise_aware_add_anchor_redundancy: bool = False
+    noise_aware_default_tau: float = 0.2
+    noise_aware_unresolved_policy: str = "skip"
     weight_pairs_by_group_size: bool = False
     all_records_path: Path | None = None
     test_path: Path | None = None
@@ -521,6 +559,20 @@ def _build_data_config(section: dict[str, Any]) -> DataConfig:
             section.get("tree_extra_random_pairs_per_group", 0)
         ),
         add_redundancy_edges=bool(section.get("add_redundancy_edges", True)),
+        noise_aware_extra_edges_per_record=int(
+            section.get("noise_aware_extra_edges_per_record", 2)
+        ),
+        noise_aware_max_degree=int(section.get("noise_aware_max_degree", 12)),
+        noise_aware_candidate_probe_count=int(
+            section.get("noise_aware_candidate_probe_count", 8)
+        ),
+        noise_aware_add_anchor_redundancy=bool(
+            section.get("noise_aware_add_anchor_redundancy", False)
+        ),
+        noise_aware_default_tau=float(section.get("noise_aware_default_tau", 0.2)),
+        noise_aware_unresolved_policy=str(
+            section.get("noise_aware_unresolved_policy", "skip")
+        ),
         weight_pairs_by_group_size=bool(section.get("weight_pairs_by_group_size", False)),
         all_records_path=all_records_path,
         test_path=test_path,

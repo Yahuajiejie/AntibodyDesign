@@ -8,7 +8,10 @@ _VALID_PAIR_SAMPLE_STRATEGIES = {
     "capped_proportional",
     "balanced_tree",
     "randomized_bst",
+    "noise_aware_multiscale",
 }
+
+_VALID_UNRESOLVED_POLICIES = {"skip"}
 
 
 def _validate_pair_sampling(
@@ -23,6 +26,11 @@ def _validate_pair_sampling(
     discrete_label_unique_threshold: int,
     discrete_label_ratio_threshold: float,
     tree_extra_random_pairs_per_group: int = 0,
+    noise_aware_extra_edges_per_record: int = 2,
+    noise_aware_max_degree: int = 12,
+    noise_aware_candidate_probe_count: int = 8,
+    noise_aware_default_tau: float = 0.2,
+    noise_aware_unresolved_policy: str = "skip",
 ) -> None:
     if max_pairs_per_group < 1:
         raise ValueError(f"max_pairs_per_group must be >= 1, got {max_pairs_per_group}")
@@ -63,4 +71,23 @@ def _validate_pair_sampling(
         raise ValueError(
             "tree_extra_random_pairs_per_group must be >= 0, "
             f"got {tree_extra_random_pairs_per_group}"
+        )
+    if noise_aware_extra_edges_per_record < 0:
+        raise ValueError(
+            "noise_aware_extra_edges_per_record must be >= 0, "
+            f"got {noise_aware_extra_edges_per_record}"
+        )
+    if noise_aware_max_degree < 1:
+        raise ValueError(f"noise_aware_max_degree must be >= 1, got {noise_aware_max_degree}")
+    if noise_aware_candidate_probe_count < 1:
+        raise ValueError(
+            "noise_aware_candidate_probe_count must be >= 1, "
+            f"got {noise_aware_candidate_probe_count}"
+        )
+    if noise_aware_default_tau < 0:
+        raise ValueError(f"noise_aware_default_tau must be >= 0, got {noise_aware_default_tau}")
+    if noise_aware_unresolved_policy not in _VALID_UNRESOLVED_POLICIES:
+        raise ValueError(
+            "noise_aware_unresolved_policy must be one of "
+            f"{sorted(_VALID_UNRESOLVED_POLICIES)}, got {noise_aware_unresolved_policy!r}"
         )
