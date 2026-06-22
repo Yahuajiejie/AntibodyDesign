@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
+import yaml
 
 from affinity_transformer.config import (
     Config,
@@ -17,10 +18,12 @@ from affinity_transformer.config import (
     ObjectiveConfig,
     TrainConfig,
 )
-from affinity_transformer.model import AffinityRanker
+from affinity_transformer.embeddings import EmbeddingItem
+from affinity_transformer.model import AffinityRanker, EmbeddingAffinityRanker
 from affinity_transformer.user_entry import (
     AffinityPredictor,
     AntibodyInput,
+    load_predictor,
     load_model,
     rank_antibodies,
     rank_antibodies_with_predictor,
@@ -123,6 +126,106 @@ def test_rank_antibodies_uses_model_name_loader(monkeypatch, antibody_tokenizer,
 
     assert result["model_name"].unique().tolist() == ["manual"]
     assert result["score"].tolist() == sorted(result["score"].tolist(), reverse=True)
+
+
+def test_cached_checkpoint_loads_embedding_ranker_and_scores_new_sequences(
+    tmp_path, monkeypatch
+):
+    records_path = tmp_path / "records.csv"
+    records_path.write_text("record_id\n", encoding="utf-8")
+    antibody_cache = tmp_path / "antibody-cache"
+    antigen_cache = tmp_path / "antigen-cache"
+    antibody_cache.mkdir()
+    antigen_cache.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "data": {
+            "train_path": str(records_path), "valid_path": None,
+            "test_path": None, "max_pairs_per_group": 10, "seed": 0,
+        },
+        "model": {
+            "antibody_encoder": {
+                "name": "Exscientia/IgBert", "revision": "ab-rev",
+                "tokenizer_revision": "ab-tokenizer", "mode": "frozen_cached",
+                "embedding_layer": -1, "cache_dir": str(antibody_cache),
+                "max_length": 256, "long_sequence_strategy": "truncate",
+            },
+            "antigen_encoder": {
+                "name": "facebook/esm2_t12_35M_UR50D", "revision": "ag-rev",
+                "tokenizer_revision": "ag-tokenizer", "mode": "frozen_cached",
+                "embedding_layer": -1, "cache_dir": str(antigen_cache),
+                "max_length": 512, "long_sequence_strategy": "truncate",
+            },
+            "interaction": {
+                "kind": "concat", "d_model": 8, "num_layers": 0,
+                "num_heads": 2, "ffn_multiplier": 4.0, "dropout": 0.0,
+                "pooling": "masked_mean", "bidirectional": True,
+            },
+            "objective": {
+                "name": "pairwise_ranknet", "temperature": 1.0,
+                "sigma": 1.0, "pointwise_loss": "huber",
+            },
+        },
+        "train": {"batch_size": 2, "lr": 1e-3, "epochs": 1, "device": "cpu"},
+    }), encoding="utf-8")
+    model = EmbeddingAffinityRanker(
+        antibody_input_dim=5,
+        antigen_input_dim=7,
+        d_model=8,
+        fusion_kind="concat",
+        num_heads=2,
+        dropout=0.0,
+    )
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save({"model_state_dict": model.state_dict()}, checkpoint_path)
+    registry_path = tmp_path / "registry.yaml"
+    registry_path.write_text(yaml.safe_dump({
+        "models": {
+            "cached": {
+                "checkpoint_path": str(checkpoint_path),
+                "config_path": str(config_path),
+            }
+        }
+    }), encoding="utf-8")
+
+    class FakeExtractor:
+        def __init__(self, dim):
+            self.dim = dim
+            self.encoder_name = "fake"
+            self.encoder_revision = "fake-rev"
+
+        def encode(self, requests):
+            return {
+                request.sequence_hash: EmbeddingItem.from_values(
+                    torch.arange(3 * self.dim, dtype=torch.float16).reshape(3, self.dim)
+                )
+                for request in requests
+            }
+
+        def metadata(self):
+            return {}
+
+    def fake_build_extractor(name, **kwargs):
+        return FakeExtractor(5 if name == "igbert" else 7)
+
+    monkeypatch.setattr(
+        "affinity_transformer.user_entry.build_embedding_extractor",
+        fake_build_extractor,
+    )
+    predictor = load_predictor("cached", registry_path)
+    result = score_antibodies_with_predictor(
+        _ANTIGEN,
+        [
+            AntibodyInput("new-a", _HEAVY_1, _LIGHT, None, "Fv"),
+            AntibodyInput("new-b", _HEAVY_2, _LIGHT, None, "Fv"),
+        ],
+        predictor,
+    )
+
+    assert isinstance(predictor.model, EmbeddingAffinityRanker)
+    assert predictor.antibody_tokenizer is None
+    assert result["antibody_id"].tolist() == ["new-a", "new-b"]
+    assert result["score"].notna().all()
 
 
 def test_rank_antibody_table_ranks_within_query_id_only(antibody_tokenizer, make_fake_encoder):

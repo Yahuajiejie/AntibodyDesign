@@ -13,7 +13,7 @@ import pandas as pd
 from ..config import Config
 from ..dataset import filter_trainable_records, load_records
 from ..splits import build_group_kfolds
-from ..utils import ensure_dir
+from ..utils import ensure_dir, set_seed
 
 TrainingRunner = Callable[
     [Path, Config, Path, Path, Path | None, Path | None],
@@ -60,6 +60,10 @@ def run_group_kfold_cross_validation(
     assignments = []
     fold_rows: list[dict[str, float | int]] = []
     for fold in folds:
+        # Each fold is an independent model. Reseed at the fold boundary so
+        # its initialization does not depend on how much RNG state an earlier
+        # fold happened to consume.
+        set_seed(config.data.seed + fold.index)
         fold_name = f"fold_{fold.index + 1:02d}"
         fold_dir = ensure_dir(output_dir / fold_name)
         split_dir = ensure_dir(fold_dir / "splits")

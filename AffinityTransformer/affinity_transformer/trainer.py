@@ -36,7 +36,7 @@ from .dataloader import (
 from .metrics import compute_group_spearman, summarize_group_spearman
 from .model import AffinityRanker
 from .model.losses import ranknet_loss
-from .utils import ensure_dir, get_logger, set_seed
+from .utils import ensure_dir, get_logger
 
 _logger = get_logger(__name__)
 
@@ -230,7 +230,15 @@ class Trainer:
         self.config = config
         self.device = torch.device(config.train.device)
         self.model = model.to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.train.lr)
+        trainable_parameters = [
+            parameter for parameter in self.model.parameters() if parameter.requires_grad
+        ]
+        if not trainable_parameters:
+            raise ValueError("model has no trainable parameters")
+        self.optimizer = torch.optim.Adam(trainable_parameters, lr=config.train.lr)
+        self._trainable_parameter_names = {
+            name for name, parameter in self.model.named_parameters() if parameter.requires_grad
+        }
 
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
@@ -246,6 +254,11 @@ class Trainer:
         self.embedding_metadata_hashes = dict(embedding_metadata_hashes or {})
 
         self.global_step = 0
+        self.current_epoch = 0
+        self.model_epoch = 0
+        self.best_epoch: int | None = None
+        self.best_metric: float | None = None
+        self._best_model_state: dict[str, torch.Tensor] | None = None
         self.history: list[dict[str, float]] = []
         self.log_every_n_steps = log_every_n_steps
         self.eval_log_every_n_batches = eval_log_every_n_batches
@@ -268,8 +281,7 @@ class Trainer:
 
         Returns:
             None. Side effects: updates `self.model`'s parameters and
-            `self.global_step`; reseeds global RNG state via `set_seed`;
-            writes log lines; may write `error_context.json` under
+            `self.global_step`; writes log lines; may write `error_context.json` under
             `output_dir` (see `_save_error_context`).
 
         Raises:
@@ -281,14 +293,13 @@ class Trainer:
                 stopping is enabled) if `early_stopping_metric` is not a key
                 of `evaluate`'s output.
         """
-        set_seed(self.config.data.seed)
-
-        best_metric: float | None = None
         epochs_without_improvement = 0
 
         for epoch in range(1, self.config.train.epochs + 1):
+            self.current_epoch = epoch
             t_epoch = time.time()
             train_loss = self._run_train_epoch(epoch)
+            self.model_epoch = epoch
             summary: dict[str, float] = {"epoch": float(epoch), "train_loss": train_loss}
 
             valid_metrics: dict[str, float] = {}
@@ -301,34 +312,61 @@ class Trainer:
             self.history.append(summary)
             _logger.info("epoch %d  time=%s: %s", epoch, _fmt_seconds(epoch_time), summary)
 
-            if self.output_dir is not None:
-                ckpt_path = self.output_dir / "checkpoint_latest.pt"
-                self.save_checkpoint(ckpt_path)
-                _logger.info("epoch %d: checkpoint → %s", epoch, ckpt_path)
-
-            if self.early_stopping_patience is not None and self.valid_dataloader is not None:
+            improved = False
+            if self.valid_dataloader is not None:
                 if self.early_stopping_metric not in valid_metrics:
                     raise ValueError(
                         f"early_stopping_metric {self.early_stopping_metric!r} is not in "
                         f"evaluate()'s output (keys: {sorted(valid_metrics)})"
                     )
                 metric_value = valid_metrics[self.early_stopping_metric]
-
                 improved = not math.isnan(metric_value) and (
-                    best_metric is None or metric_value > best_metric
+                    self.best_metric is None or metric_value > self.best_metric
                 )
                 if improved:
-                    best_metric = metric_value
+                    self.best_metric = metric_value
+                    self.best_epoch = epoch
+                    self._best_model_state = {
+                        key: value.detach().cpu().clone()
+                        for key, value in self.model.state_dict().items()
+                        if key in self._trainable_parameter_names
+                    }
                     epochs_without_improvement = 0
                 else:
                     epochs_without_improvement += 1
 
+            if self.output_dir is not None:
+                latest_path = self.output_dir / "checkpoint_latest.pt"
+                self.save_checkpoint(latest_path)
+                _logger.info("epoch %d: latest checkpoint → %s", epoch, latest_path)
+                if improved:
+                    best_path = self.output_dir / "checkpoint_best.pt"
+                    self.save_checkpoint(best_path)
+                    _logger.info(
+                        "epoch %d: best checkpoint (%s=%.6f) → %s",
+                        epoch,
+                        self.early_stopping_metric,
+                        self.best_metric,
+                        best_path,
+                    )
+
+            if self.early_stopping_patience is not None and self.valid_dataloader is not None:
                 if epochs_without_improvement >= self.early_stopping_patience:
                     _logger.info(
                         "early stopping at epoch %d (no improvement in %s for %d epoch(s))",
                         epoch, self.early_stopping_metric, epochs_without_improvement,
                     )
                     break
+
+        # The public model after fit() is the selected model, not simply the
+        # state from the final epoch. checkpoint_latest.pt remains available
+        # for resuming the interrupted training trajectory.
+        if self._best_model_state is not None:
+            selected_state = self.model.state_dict()
+            selected_state.update(self._best_model_state)
+            self.model.load_state_dict(selected_state)
+            assert self.best_epoch is not None
+            self.model_epoch = self.best_epoch
 
     def _batch_group_weights(
         self, group_ids: list[str], reference: torch.Tensor
@@ -566,6 +604,7 @@ class Trainer:
                 - `"model_state_dict"`: `self.model.state_dict()`.
                 - `"config"`: `self.config` (the full `Config`, spec §5.1).
                 - `"global_step"`: `self.global_step`.
+                - optimizer and selection state needed to resume or audit.
                 - `"seed"`: `self.config.data.seed`.
         """
         path = Path(path)
@@ -575,6 +614,11 @@ class Trainer:
                 "model_state_dict": self.model.state_dict(),
                 "config": self.config,
                 "global_step": self.global_step,
+                "epoch": self.current_epoch,
+                "selected_epoch": self.model_epoch,
+                "best_epoch": self.best_epoch,
+                "best_metric": self.best_metric,
+                "optimizer_state_dict": self.optimizer.state_dict(),
                 "seed": self.config.data.seed,
                 "embedding_metadata_hashes": self.embedding_metadata_hashes,
             },
@@ -591,9 +635,8 @@ class Trainer:
             map_location: Passed to `torch.load`; defaults to `self.device`.
 
         Returns:
-            The raw checkpoint dict (`model_state_dict, config, global_step,
-            seed`), after applying `model_state_dict` to `self.model` and
-            restoring `self.global_step`. `self.config` is left unchanged --
+            The raw checkpoint dict, after applying `model_state_dict` to
+            `self.model` and restoring available training state. `self.config` is left unchanged --
             the caller is responsible for constructing a `Trainer` whose
             `model` architecture matches `checkpoint["config"].model`.
 
@@ -613,6 +656,13 @@ class Trainer:
             )
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.global_step = int(checkpoint["global_step"])
+        self.current_epoch = int(checkpoint.get("epoch", 0))
+        self.model_epoch = int(checkpoint.get("selected_epoch", self.current_epoch))
+        self.best_epoch = checkpoint.get("best_epoch")
+        self.best_metric = checkpoint.get("best_metric")
+        optimizer_state = checkpoint.get("optimizer_state_dict")
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
         return checkpoint
 
 
@@ -673,13 +723,36 @@ class _Esm2EncoderWrapper(nn.Module):
     wrapper v 包装，指的是把ESM2的输出转化为我们自己需要的格式
     """
 
-    def __init__(self, esm_model: nn.Module) -> None:
+    def __init__(self, esm_model: nn.Module, *, frozen: bool = False) -> None:
         super().__init__()
         self.esm_model = esm_model
+        self.frozen = frozen
+        if frozen:
+            self.requires_grad_(False)
+            super().train(False)
+
+    def train(self, mode: bool = True) -> "_Esm2EncoderWrapper":
+        """Keep a frozen base encoder in evaluation mode.
+
+        Calling ``model.train()`` recursively toggles every child module by
+        default. A frozen encoder must not reactivate dropout merely because
+        the trainable scoring layers enter training mode.
+        """
+        return super().train(False if self.frozen else mode)
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Map `(input_ids, attention_mask) -> FloatTensor[B, L, d_model]` (spec §5.4)."""
-        outputs = self.esm_model(input_ids=input_ids, attention_mask=attention_mask.long())
+        if self.frozen:
+            with torch.no_grad():
+                outputs = self.esm_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask.long(),
+                )
+        else:
+            outputs = self.esm_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask.long(),
+            )
         return torch.nan_to_num(outputs.last_hidden_state, nan=0.0)
 
 
@@ -774,6 +847,19 @@ def build_model_and_tokenizers(
             "build_model_and_tokenizers is the online path and cannot consume "
             "frozen_cached config; use model.build_ranker with validated caches"
         )
+    online_configs = [("antibody_encoder", antibody_config)]
+    if antigen_config is not None:
+        online_configs.append(("antigen_encoder", antigen_config))
+    for role, encoder_config in online_configs:
+        if encoder_config.mode == "lora_online":
+            raise NotImplementedError(
+                f"{role}.mode='lora_online' is not implemented; refusing to "
+                "silently run full fine-tuning"
+            )
+        if encoder_config.mode != "frozen_online":
+            raise ValueError(
+                f"unsupported online mode for {role}: {encoder_config.mode!r}"
+            )
     antibody_repo = _resolve_esm2(
         antibody_config.name, "antibody_encoder", model_config.d_model
     )
@@ -790,7 +876,8 @@ def build_model_and_tokenizers(
         revision=antibody_config.tokenizer_revision,
     )
     antibody_encoder = _Esm2EncoderWrapper(
-        AutoModel.from_pretrained(antibody_repo, revision=antibody_config.revision)
+        AutoModel.from_pretrained(antibody_repo, revision=antibody_config.revision),
+        frozen=True,
     )
 
     if antigen_repo is None:
@@ -803,7 +890,8 @@ def build_model_and_tokenizers(
             revision=antigen_config.tokenizer_revision,
         )
         antigen_encoder = _Esm2EncoderWrapper(
-            AutoModel.from_pretrained(antigen_repo, revision=antigen_config.revision)
+            AutoModel.from_pretrained(antigen_repo, revision=antigen_config.revision),
+            frozen=True,
         )
 
     model = AffinityRanker(

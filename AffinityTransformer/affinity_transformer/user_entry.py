@@ -14,12 +14,23 @@ from typing import Literal, Sequence
 
 import pandas as pd
 import torch
+import torch.nn as nn
 import yaml
 
 from .config import Config, load_config
 from .dataloader import RankBatch, Tokenizer, collate_rank_batch
 from .dataset import AffinityExample
-from .model import AffinityRanker
+from .embeddings import (
+    EmbeddingBatch,
+    EmbeddingExtractor,
+    InMemoryEmbeddingStore,
+    antibody_embedding_request,
+    antigen_embedding_request,
+    build_embedding_extractor,
+    collate_embedding_batch,
+)
+from .embeddings.schema import AntibodySequenceInput
+from .model import AffinityRanker, EmbeddingAffinityRanker
 from .trainer import build_model_and_tokenizers
 from .utils import validate_amino_acid_sequence
 
@@ -52,11 +63,13 @@ class AffinityPredictor:
     """Inference bundle: model + tokenizers + config."""
 
     model_name: str
-    model: AffinityRanker
+    model: nn.Module
     config: Config
-    antibody_tokenizer: Tokenizer
+    antibody_tokenizer: Tokenizer | None
     antigen_tokenizer: Tokenizer | None
     checkpoint_path: Path
+    antibody_extractor: EmbeddingExtractor | None = None
+    antigen_extractor: EmbeddingExtractor | None = None
 
 
 def load_predictor(
@@ -96,12 +109,23 @@ def load_predictor(
     checkpoint_path = _registry_path(registry_path, entry.get("checkpoint_path"), "checkpoint_path")
     config_path = _registry_path(registry_path, entry.get("config_path"), "config_path")
 
-    config = load_config(config_path)
-    model, antibody_tokenizer, antigen_tokenizer = build_model_and_tokenizers(config.model)
     checkpoint = _torch_load_checkpoint(checkpoint_path, map_location="cpu")
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(torch.device(config.train.device))
-    model.eval()
+    config = load_config(config_path)
+    if config.model.antibody_encoder.mode == "frozen_cached":
+        (
+            model,
+            antibody_extractor,
+            antigen_extractor,
+        ) = _build_cached_predictor_components(config, checkpoint)
+        antibody_tokenizer = None
+        antigen_tokenizer = None
+    else:
+        model, antibody_tokenizer, antigen_tokenizer = build_model_and_tokenizers(config.model)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(torch.device(config.train.device))
+        model.eval()
+        antibody_extractor = None
+        antigen_extractor = None
 
     return AffinityPredictor(
         model_name=model_name,
@@ -110,11 +134,13 @@ def load_predictor(
         antibody_tokenizer=antibody_tokenizer,
         antigen_tokenizer=antigen_tokenizer,
         checkpoint_path=checkpoint_path,
+        antibody_extractor=antibody_extractor,
+        antigen_extractor=antigen_extractor,
     )
 
 
-def load_model(checkpoint_path: Path, config_path: Path | None = None) -> AffinityRanker:
-    """Load a bare `AffinityRanker` for internal/developer use.
+def load_model(checkpoint_path: Path, config_path: Path | None = None) -> nn.Module:
+    """Load a bare ranker for internal/developer use.
 
     This function intentionally returns only the tensor model. It does not
     attach tokenizers and is not the competition-facing entry point.
@@ -123,6 +149,8 @@ def load_model(checkpoint_path: Path, config_path: Path | None = None) -> Affini
     checkpoint = _torch_load_checkpoint(checkpoint_path, map_location="cpu")
     config = load_config(Path(config_path)) if config_path is not None else checkpoint["config"]
 
+    if config.model.antibody_encoder.mode == "frozen_cached":
+        return _build_cached_ranker(config, checkpoint)
     model, _, _ = build_model_and_tokenizers(config.model)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -172,16 +200,23 @@ def score_antibodies_with_predictor(
     examples = [
         _to_affinity_example(antibody, antigen_sequence, query_id) for antibody in antibodies
     ]
-    batch = collate_rank_batch(
-        examples,
-        predictor.antibody_tokenizer,
-        predictor.antigen_tokenizer,
-    )
-    batch = _move_rank_batch(batch, next(predictor.model.parameters()).device)
+    if predictor.antibody_extractor is None:
+        if predictor.antibody_tokenizer is None:
+            raise ValueError("online predictor is missing its antibody tokenizer")
+        batch = collate_rank_batch(
+            examples,
+            predictor.antibody_tokenizer,
+            predictor.antigen_tokenizer,
+        )
+        model_batch: RankBatch | EmbeddingBatch = _move_rank_batch(
+            batch, next(predictor.model.parameters()).device
+        )
+    else:
+        model_batch = _build_online_embedding_batch(examples, predictor)
 
     predictor.model.eval()
     with torch.no_grad():
-        scores = predictor.model(batch)
+        scores = predictor.model(model_batch)
 
     result = pd.DataFrame({
         "query_id": query_id,
@@ -244,6 +279,168 @@ def _torch_load_checkpoint(path: Path, map_location: str):
         return torch.load(path, map_location=map_location, weights_only=False)
     except TypeError:
         return torch.load(path, map_location=map_location)
+
+
+def _build_cached_predictor_components(
+    config: Config,
+    checkpoint: dict[str, object],
+) -> tuple[EmbeddingAffinityRanker, EmbeddingExtractor, EmbeddingExtractor | None]:
+    """Rebuild the embedding-native model and online frozen encoders.
+
+    ``frozen_cached`` describes how embeddings were supplied during training,
+    not a requirement that every future query already exists in that cache.
+    New user sequences are encoded online with the same frozen adapter
+    contract and are then passed to the trained embedding-native ranker.
+    """
+    model = _build_cached_ranker(config, checkpoint)
+    interaction = config.model.interaction
+
+    antibody_extractor = _build_online_extractor(
+        config.model.antibody_encoder,
+        config.train.device,
+    )
+    antigen_extractor = (
+        None
+        if config.model.antigen_encoder is None
+        else _build_online_extractor(config.model.antigen_encoder, config.train.device)
+    )
+    if interaction.kind != "antibody_only" and antigen_extractor is None:
+        raise ValueError(f"{interaction.kind} predictor requires an antigen encoder")
+    return model, antibody_extractor, antigen_extractor
+
+
+def _build_cached_ranker(
+    config: Config,
+    checkpoint: dict[str, object],
+) -> EmbeddingAffinityRanker:
+    raw_state = checkpoint.get("model_state_dict")
+    if not isinstance(raw_state, dict):
+        raise ValueError("checkpoint is missing model_state_dict")
+    state: dict[str, torch.Tensor] = raw_state  # type: ignore[assignment]
+    antibody_dim = _projection_input_dim(state, "antibody_projection")
+    interaction = config.model.interaction
+    antigen_dim = (
+        None
+        if interaction.kind == "antibody_only"
+        else _projection_input_dim(state, "antigen_projection")
+    )
+    model = EmbeddingAffinityRanker(
+        antibody_input_dim=antibody_dim,
+        antigen_input_dim=antigen_dim,
+        d_model=interaction.d_model,
+        fusion_kind=interaction.kind,  # type: ignore[arg-type]
+        num_layers=interaction.num_layers,
+        num_heads=interaction.num_heads,
+        ffn_multiplier=interaction.ffn_multiplier,
+        dropout=interaction.dropout,
+        pooling=interaction.pooling,
+        bidirectional=interaction.bidirectional,
+    )
+    model.load_state_dict(state, strict=True)
+    model.to(torch.device(config.train.device))
+    model.eval()
+
+    return model
+
+
+def _projection_input_dim(
+    state: dict[str, torch.Tensor],
+    prefix: str,
+) -> int:
+    key = f"{prefix}.input_norm.weight"
+    value = state.get(key)
+    if not isinstance(value, torch.Tensor) or value.ndim != 1:
+        raise ValueError(
+            f"checkpoint does not contain an embedding-native {prefix}: missing {key!r}"
+        )
+    return int(value.shape[0])
+
+
+def _build_online_extractor(encoder_config, device: str) -> EmbeddingExtractor:
+    if encoder_config.mode != "frozen_cached":
+        raise ValueError(
+            "embedding-native inference requires frozen_cached encoder metadata, "
+            f"got {encoder_config.mode!r}"
+        )
+    if encoder_config.long_sequence_strategy == "chunk":
+        raise NotImplementedError(
+            "online inference for long_sequence_strategy='chunk' is not implemented"
+        )
+    normalized_name = encoder_config.name.lower()
+    if "igbert" in normalized_name:
+        extractor_name = "igbert"
+    elif "esm2" in normalized_name:
+        extractor_name = "esm2"
+    else:
+        raise ValueError(
+            f"cannot infer embedding adapter for encoder {encoder_config.name!r}"
+        )
+    return build_embedding_extractor(
+        extractor_name,
+        model_name=encoder_config.name,
+        revision=encoder_config.revision,
+        tokenizer_revision=encoder_config.tokenizer_revision,
+        device=device,
+        embedding_layer=encoder_config.embedding_layer,
+        output_dtype=torch.float16,
+        max_length=encoder_config.max_length,
+        long_sequence_strategy=encoder_config.long_sequence_strategy,
+    )
+
+
+def _build_online_embedding_batch(
+    examples: Sequence[AffinityExample],
+    predictor: AffinityPredictor,
+) -> EmbeddingBatch:
+    antibody_extractor = predictor.antibody_extractor
+    assert antibody_extractor is not None
+    antibody_requests = [
+        antibody_embedding_request(
+            AntibodySequenceInput(
+                heavy_chain=example.heavy_chain,
+                light_chain=example.light_chain,
+                single_chain_sequence=example.single_chain_sequence,
+                antibody_type=example.antibody_type,
+            )
+        )
+        for example in examples
+    ]
+    antibody_items = antibody_extractor.encode(antibody_requests)
+    antibody_store = InMemoryEmbeddingStore()
+    for request in antibody_requests:
+        item = antibody_items.get(request.sequence_hash)
+        if item is None:
+            raise ValueError(
+                "antibody extractor omitted sequence_hash="
+                f"{request.sequence_hash}"
+            )
+        antibody_store.put(request.sequence_hash, "antibody", item)
+
+    antigen_store: InMemoryEmbeddingStore | None = None
+    antigen_requests = [
+        antigen_embedding_request(example.antigen_sequence)
+        for example in examples
+        if example.antigen_sequence is not None
+    ]
+    if antigen_requests:
+        if predictor.antigen_extractor is None:
+            # Antibody-only models deliberately ignore antigen input.
+            if predictor.config.model.interaction.kind != "antibody_only":
+                raise ValueError("predictor is missing its antigen embedding extractor")
+        else:
+            antigen_items = predictor.antigen_extractor.encode(antigen_requests)
+            antigen_store = InMemoryEmbeddingStore()
+            for request in antigen_requests:
+                item = antigen_items.get(request.sequence_hash)
+                if item is None:
+                    raise ValueError(
+                        "antigen extractor omitted sequence_hash="
+                        f"{request.sequence_hash}"
+                    )
+                antigen_store.put(request.sequence_hash, "antigen", item)
+
+    batch = collate_embedding_batch(examples, antibody_store, antigen_store)
+    return _move_embedding_batch(batch, next(predictor.model.parameters()).device)
 
 
 def _registry_path(registry_path: Path, value: object, field_name: str) -> Path:
@@ -351,6 +548,20 @@ def _move_rank_batch(batch: RankBatch, device: torch.device) -> RankBatch:
         antibody_tokens=batch.antibody_tokens.to(device),
         antibody_mask=batch.antibody_mask.to(device),
         antigen_tokens=None if batch.antigen_tokens is None else batch.antigen_tokens.to(device),
+        antigen_mask=None if batch.antigen_mask is None else batch.antigen_mask.to(device),
+        labels=batch.labels.to(device),
+        record_ids=batch.record_ids,
+        group_ids=batch.group_ids,
+    )
+
+
+def _move_embedding_batch(batch: EmbeddingBatch, device: torch.device) -> EmbeddingBatch:
+    return EmbeddingBatch(
+        antibody_embeddings=batch.antibody_embeddings.to(device),
+        antibody_mask=batch.antibody_mask.to(device),
+        antigen_embeddings=(
+            None if batch.antigen_embeddings is None else batch.antigen_embeddings.to(device)
+        ),
         antigen_mask=None if batch.antigen_mask is None else batch.antigen_mask.to(device),
         labels=batch.labels.to(device),
         record_ids=batch.record_ids,

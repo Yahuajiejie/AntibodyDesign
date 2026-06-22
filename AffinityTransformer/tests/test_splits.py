@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
+from affinity_transformer.antigen_clustering import compute_antigen_clusters
 from affinity_transformer.splits import build_group_kfolds, build_splits
 
 
@@ -150,3 +152,108 @@ def _split_row(record_id: str, group_id: str, dataset_id: str) -> dict[str, obje
         "label_kind": "experimental",
         "antigen_source": "retrieved",
     }
+
+
+def _antigen_cluster_row(record_id: str, antigen_key: str, antigen_sequence: str) -> dict[str, object]:
+    return {
+        **_split_row(record_id, group_id=f"{antigen_key}/kd", dataset_id="studyX/tableX"),
+        "antigen_key": antigen_key,
+    } | {"antigen_sequence": antigen_sequence}
+
+
+def _mutate(seq: str, pos: int, new_char: str) -> str:
+    return seq[:pos] + new_char + seq[pos + 1:]
+
+
+_BASE_A = "MKTAYIAKQRQISFVKSHFSRQLEVRLGLIESQ" * 6
+_BASE_B = "AAGGCCTTAAGGCCTTAAGGCCTTAAGGCCTTA" * 6
+_BASE_C = "QWQWQWQWQWQWQWQWQWQWQWQWQWQWQWQWQ" * 6
+_BASE_D = "RRSSRRSSRRSSRRSSRRSSRRSSRRSSRRSS" * 6
+
+
+def _point_mutant_family_records(
+    prefix: str, base: str, n_antigens: int, records_per_antigen: int = 3,
+) -> list[dict]:
+    rows = []
+    for i in range(n_antigens):
+        sequence = _mutate(base, i % len(base), "X")
+        for j in range(records_per_antigen):
+            rows.append(_antigen_cluster_row(f"{prefix}_{i}/{j}", f"{prefix}_{i}", sequence))
+    return rows
+
+
+def test_antigen_cluster_holdout_split_keeps_near_duplicate_antigens_together():
+    # Family Ag is 30 point-mutant variants of the same base sequence
+    # (>99% pairwise identity) -- under group_holdout_split they could land
+    # on opposite sides since they're different group_ids; under
+    # antigen_cluster_holdout_split they must all land together. Families
+    # B/C/D are unrelated filler so there are >=3 total cluster units to
+    # split among (the partitioner requires at least 3 units).
+    records = pd.DataFrame(
+        _point_mutant_family_records("Ag", _BASE_A, n_antigens=30)
+        + _point_mutant_family_records("B", _BASE_B, n_antigens=5)
+        + _point_mutant_family_records("C", _BASE_C, n_antigens=5)
+        + _point_mutant_family_records("D", _BASE_D, n_antigens=5)
+    )
+    clusters = compute_antigen_clusters(records, similarity_threshold=0.9, linkage_method="average")
+    ag_cluster_ids = set(clusters.loc[clusters["antigen_key"].str.startswith("Ag_"), "antigen_cluster_id"])
+    assert len(ag_cluster_ids) == 1  # sanity: family Ag really did cluster as one
+
+    result = build_splits(
+        records, strategy="antigen_cluster_holdout_split",
+        valid_fraction=0.3, test_fraction=0.2, seed=0, antigen_clusters=clusters,
+    )
+
+    train_keys = {key for key in result.train["antigen_key"] if key.startswith("Ag_")}
+    valid_keys = {key for key in result.valid["antigen_key"] if key.startswith("Ag_")}
+    test_keys = {key for key in result.test["antigen_key"] if key.startswith("Ag_")}
+    # Family Ag is a single antigen_cluster_id, so it must land entirely on
+    # one side -- at most one of these three sets is non-empty.
+    assert sum(bool(s) for s in (train_keys, valid_keys, test_keys)) == 1
+
+
+def test_antigen_cluster_holdout_split_leakage_report_includes_antigen_cluster_overlap():
+    records = pd.DataFrame(
+        _point_mutant_family_records("A", _BASE_A, n_antigens=15)
+        + _point_mutant_family_records("B", _BASE_B, n_antigens=15)
+        + _point_mutant_family_records("C", _BASE_C, n_antigens=15)
+        + _point_mutant_family_records("D", _BASE_D, n_antigens=15)
+    )
+
+    clusters = compute_antigen_clusters(records, similarity_threshold=0.9, linkage_method="average")
+    assert clusters["antigen_cluster_id"].nunique() == 4  # sanity: 4 well-separated families
+    result = build_splits(
+        records, strategy="antigen_cluster_holdout_split",
+        valid_fraction=0.25, test_fraction=0.25, seed=0, antigen_clusters=clusters,
+    )
+
+    assert "antigen_cluster_overlap" in result.leakage_report["check_name"].tolist()
+    assert "group_id_overlap" in result.leakage_report["check_name"].tolist()
+    assert (result.leakage_report["status"] == "PASS").all()
+    # the helper column used internally for the leakage check must not leak
+    # into the user-facing output
+    assert "_antigen_cluster_id" not in result.train.columns
+    assert "_antigen_cluster_id" not in result.valid.columns
+    assert "_antigen_cluster_id" not in result.test.columns
+
+
+def test_antigen_cluster_holdout_split_requires_antigen_clusters_argument():
+    records = pd.DataFrame(_point_mutant_family_records("A", _BASE_A, n_antigens=10))
+    with pytest.raises(ValueError, match="antigen_clusters is required"):
+        build_splits(
+            records, strategy="antigen_cluster_holdout_split",
+            valid_fraction=0.2, test_fraction=0.2, seed=0,
+        )
+
+
+def test_antigen_cluster_holdout_split_rejects_unmapped_antigen_key():
+    records = pd.DataFrame(_point_mutant_family_records("A", _BASE_A, n_antigens=10))
+    clusters = compute_antigen_clusters(records, similarity_threshold=0.9)
+    stray_row = pd.DataFrame([_antigen_cluster_row("stray/0", "NotInClusters", "Z" * 50)])
+    records_with_stray = pd.concat([records, stray_row], ignore_index=True)
+
+    with pytest.raises(ValueError, match="missing from antigen_clusters"):
+        build_splits(
+            records_with_stray, strategy="antigen_cluster_holdout_split",
+            valid_fraction=0.2, test_fraction=0.2, seed=0, antigen_clusters=clusters,
+        )

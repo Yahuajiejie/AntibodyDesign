@@ -14,7 +14,7 @@ from affinity_transformer.training import (
     run_group_kfold_cross_validation,
     run_online_training,
 )
-from affinity_transformer.utils import ensure_dir
+from affinity_transformer.utils import ensure_dir, set_seed
 
 
 def main() -> None:
@@ -31,6 +31,15 @@ def main() -> None:
 def run_training(config_path: Path, output_dir: Path) -> dict[str, float]:
     """Load one experiment and dispatch to its explicit execution mode."""
     config = load_config(config_path)
+    if config.model.objective.name != "pairwise_ranknet":
+        raise NotImplementedError(
+            f"objective {config.model.objective.name!r} is declared but has no "
+            "complete training runner; currently supported: 'pairwise_ranknet'"
+        )
+    # Seeding must precede model, head, DataLoader, and optimizer construction.
+    # Trainer.fit() is too late: by then randomly initialized modules already
+    # exist and repeated runs no longer start from the same state.
+    set_seed(config.data.seed)
     output_dir = ensure_dir(output_dir)
 
     runner = (

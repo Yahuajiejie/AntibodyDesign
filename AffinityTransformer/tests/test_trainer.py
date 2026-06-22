@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import sys
+import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,6 +35,7 @@ from affinity_transformer.model import AffinityRanker, EmbeddingAffinityRanker
 from affinity_transformer.trainer import (
     ESM2_D_MODEL,
     Trainer,
+    _Esm2EncoderWrapper,
     _resolve_esm2,
     build_model_and_tokenizers,
 )
@@ -133,6 +137,26 @@ def test_trainer_fit_runs_one_epoch_on_toy_data(toy_records, antibody_tokenizer,
     trainer.fit()
 
     assert trainer.global_step == len(trainer.train_dataloader)
+
+
+def test_trainer_optimizer_contains_only_trainable_parameters():
+    class MixedModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.frozen = torch.nn.Linear(3, 3)
+            self.trainable = torch.nn.Linear(3, 1)
+            self.frozen.requires_grad_(False)
+
+    model = MixedModel()
+    trainer = Trainer(model=model, config=_make_config(), train_dataloader=[object()])
+    optimizer_ids = {
+        id(parameter)
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    }
+
+    assert optimizer_ids == {id(parameter) for parameter in model.trainable.parameters()}
+    assert optimizer_ids.isdisjoint({id(parameter) for parameter in model.frozen.parameters()})
 
 
 # ── §5.7 acceptance 2: save and reload checkpoint ────────────────────────────
@@ -272,6 +296,56 @@ def test_trainer_early_stopping_stops_after_patience(toy_records, antibody_token
     assert trainer.global_step == 2 * n_batches
 
 
+def test_trainer_restores_best_epoch_and_keeps_latest_checkpoint(
+    tmp_path, toy_records, antibody_tokenizer, make_fake_encoder
+):
+    trainer, _ = _build_trainer(
+        toy_records,
+        antibody_tokenizer,
+        make_fake_encoder,
+        epochs=3,
+        output_dir=tmp_path,
+    )
+    metrics = iter((0.1, 0.9, 0.2))
+
+    def fake_train_epoch(epoch):
+        with torch.no_grad():
+            for parameter in trainer.model.parameters():
+                parameter.fill_(float(epoch))
+        return float(epoch)
+
+    trainer._run_train_epoch = fake_train_epoch
+    trainer.evaluate = lambda dataloader, epoch=None: {
+        "valid_macro_spearman": 0.0,
+        "valid_weighted_spearman": next(metrics),
+        "n_valid_groups": 1.0,
+        "n_skipped_groups": 0.0,
+    }
+
+    trainer.fit()
+
+    assert trainer.best_epoch == 2
+    assert trainer.best_metric == pytest.approx(0.9)
+    assert all(
+        torch.allclose(parameter, torch.full_like(parameter, 2.0))
+        for parameter in trainer.model.parameters()
+    )
+    best = torch.load(tmp_path / "checkpoint_best.pt", weights_only=False)
+    latest = torch.load(tmp_path / "checkpoint_latest.pt", weights_only=False)
+    assert best["selected_epoch"] == 2
+    assert latest["epoch"] == 3
+    assert all(
+        torch.allclose(value, torch.full_like(value, 2.0))
+        for value in best["model_state_dict"].values()
+        if value.is_floating_point()
+    )
+    assert all(
+        torch.allclose(value, torch.full_like(value, 3.0))
+        for value in latest["model_state_dict"].values()
+        if value.is_floating_point()
+    )
+
+
 def _embedding_batches():
     records = EmbeddingBatch(
         antibody_embeddings=torch.randn(2, 3, 5),
@@ -396,3 +470,65 @@ def test_build_model_and_tokenizers_d_model_mismatch_raises_before_network():
 
     with pytest.raises(ValueError):
         build_model_and_tokenizers(model_config)
+
+
+def test_build_model_and_tokenizers_lora_fails_before_transformers_import(monkeypatch):
+    model_config = _online_model_config("esm2_t12_35M", d_model=480)
+    lora_encoder = replace(
+        model_config.antibody_encoder,
+        mode="lora_online",
+        lora_rank=8,
+        lora_alpha=16.0,
+        lora_dropout=0.1,
+    )
+    model_config = replace(model_config, antibody_encoder=lora_encoder)
+    monkeypatch.delitem(sys.modules, "transformers", raising=False)
+
+    with pytest.raises(NotImplementedError, match="silently run full fine-tuning"):
+        build_model_and_tokenizers(model_config)
+
+    assert "transformers" not in sys.modules
+
+
+def test_build_model_and_tokenizers_freezes_online_encoders(monkeypatch):
+    class FakeEsm(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.projection = torch.nn.Linear(4, 4)
+            self.dropout = torch.nn.Dropout(0.5)
+
+        def forward(self, input_ids, attention_mask):
+            hidden = self.projection(torch.ones(*input_ids.shape, 4))
+            return types.SimpleNamespace(last_hidden_state=self.dropout(hidden))
+
+    class FakeAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return FakeEsm()
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return object()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(AutoModel=FakeAutoModel, AutoTokenizer=FakeAutoTokenizer),
+    )
+    config = _online_model_config(
+        "esm2_t12_35M", antigen_name="esm2_t12_35M", d_model=480
+    )
+
+    model, _, _ = build_model_and_tokenizers(config)
+    model.train()
+
+    assert isinstance(model.antibody_encoder, _Esm2EncoderWrapper)
+    assert model.antibody_encoder.training is False
+    assert model.antigen_encoder is not None
+    assert model.antigen_encoder.training is False
+    frozen_parameters = list(model.antibody_encoder.parameters()) + list(
+        model.antigen_encoder.parameters()
+    )
+    assert frozen_parameters
+    assert all(not parameter.requires_grad for parameter in frozen_parameters)

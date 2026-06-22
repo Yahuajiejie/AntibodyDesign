@@ -120,6 +120,9 @@ def run_cached_ranknet(
     metrics: dict[str, float] = {}
     if trainer.history:
         metrics.update(trainer.history[-1])
+    metrics["selected_epoch"] = float(trainer.model_epoch)
+    if trainer.best_metric is not None:
+        metrics["selection_metric_value"] = float(trainer.best_metric)
     if valid_records is not None:
         predictions = predict_cached_records(
             trainer.model,

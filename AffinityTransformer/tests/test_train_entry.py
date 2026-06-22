@@ -101,6 +101,79 @@ def test_run_training_writes_checkpoint_and_metrics(
     assert "test_weighted_spearman" in metrics
 
 
+def test_run_training_seeds_before_runner(tmp_path, toy_records, monkeypatch):
+    records_path = tmp_path / "records.csv"
+    toy_records.to_csv(records_path, index=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "data": {
+            "train_path": str(records_path), "valid_path": None,
+            "test_path": None, "max_pairs_per_group": 20, "seed": 73,
+        },
+        "model": {
+            "antibody_encoder": "fake", "antigen_encoder": None,
+            "d_model": 8, "use_cross_attention": False,
+        },
+        "train": {"batch_size": 2, "lr": 1e-3, "epochs": 1, "device": "cpu"},
+    }), encoding="utf-8")
+    samples = []
+
+    def fake_runner(*args):
+        samples.append(float(torch.rand(())))
+        torch.rand(100)
+        return {"sample": samples[-1]}
+
+    monkeypatch.setattr(train, "run_online_training", fake_runner)
+    train.run_training(config_path, tmp_path / "out-a")
+    train.run_training(config_path, tmp_path / "out-b")
+
+    assert samples[0] == samples[1]
+
+
+def test_run_training_rejects_unimplemented_objective_before_runner(
+    tmp_path, toy_records, monkeypatch
+):
+    records_path = tmp_path / "records.csv"
+    toy_records.to_csv(records_path, index=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "data": {
+            "train_path": str(records_path), "valid_path": None,
+            "test_path": None, "max_pairs_per_group": 20, "seed": 0,
+        },
+        "model": {
+            "antibody_encoder": {
+                "name": "esm2_t12_35M", "revision": "main",
+                "tokenizer_revision": "main", "mode": "frozen_online",
+                "embedding_layer": -1, "cache_dir": None,
+                "max_length": None, "long_sequence_strategy": "error",
+            },
+            "antigen_encoder": None,
+            "interaction": {
+                "kind": "antibody_only", "d_model": 480, "num_layers": 0,
+                "num_heads": 1, "ffn_multiplier": 4.0, "dropout": 0.0,
+                "pooling": "masked_mean", "bidirectional": False,
+            },
+            "objective": {
+                "name": "listwise_listnet", "temperature": 1.0,
+                "sigma": 1.0, "pointwise_loss": "huber",
+            },
+        },
+        "train": {"batch_size": 2, "lr": 1e-3, "epochs": 1, "device": "cpu"},
+    }), encoding="utf-8")
+    called = False
+
+    def fake_runner(*args):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(train, "run_online_training", fake_runner)
+    with pytest.raises(NotImplementedError, match="no complete training runner"):
+        train.run_training(config_path, tmp_path / "out")
+    assert called is False
+
+
 def test_resolve_data_paths_applies_record_filter_before_split(tmp_path, toy_records):
     records_path = tmp_path / "all_records.csv"
     toy_records.to_csv(records_path, index=False)

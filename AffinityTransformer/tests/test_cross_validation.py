@@ -6,6 +6,7 @@ import json
 
 import pandas as pd
 import pytest
+import torch
 import yaml
 
 from affinity_transformer.config import load_config
@@ -87,3 +88,39 @@ def test_group_kfold_runner_trains_each_fold_and_aggregates(
     assert summary["n_splits"] == 3
     assert summary["metrics"]["valid_macro_spearman"]["mean"] == pytest.approx(2.0)
     assert metrics["cv_valid_macro_spearman_mean"] == pytest.approx(2.0)
+
+
+def test_group_kfold_reseeds_each_model_before_runner(tmp_path, toy_records):
+    records_path = tmp_path / "records.csv"
+    toy_records.to_csv(records_path, index=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "data": {
+            "train_path": str(records_path), "valid_path": None,
+            "test_path": None, "max_pairs_per_group": 20, "seed": 41,
+        },
+        "model": {
+            "antibody_encoder": "fake", "antigen_encoder": None,
+            "d_model": 8, "use_cross_attention": False,
+        },
+        "train": {"batch_size": 2, "lr": 1e-3, "epochs": 1, "device": "cpu"},
+        "cross_validation": {
+            "enabled": True, "n_splits": 3, "source": "train", "seed": 11,
+        },
+    }), encoding="utf-8")
+    config = load_config(config_path)
+    samples = []
+
+    def fake_runner(*args):
+        samples.append(float(torch.rand(())))
+        # Consume a variable amount of RNG state; the next fold must still
+        # start from its own deterministic seed.
+        torch.rand(len(samples) * 7)
+        return {"valid_macro_spearman": 0.0}
+
+    run_group_kfold_cross_validation(config_path, config, tmp_path / "out", fake_runner)
+    expected = []
+    for fold_index in range(3):
+        torch.manual_seed(41 + fold_index)
+        expected.append(float(torch.rand(())))
+    assert samples == expected
