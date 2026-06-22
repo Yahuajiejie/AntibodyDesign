@@ -73,12 +73,12 @@
 
 - [ ] `__init__.py`
 - [x] `artifacts.py`
-- [ ] `cached.py` （本轮也改动：`load_trainable_records`三处调用都多传了`config`）
-- [ ] `cross_validation.py`
-- [ ] `data.py` （已改动，需重新质检：`load_trainable_records`新增`config`参数，接入`record_filter`——之前你打勾看的是没有这处改动的版本）
+- [x] `cached.py` （本轮也改动：`load_trainable_records`三处调用都多传了`config`）
+- [x] `cross_validation.py`
+- [x] `data.py` （已改动，需重新质检：`load_trainable_records`新增`config`参数，接入`record_filter`——之前你打勾看的是没有这处改动的版本）
 - [ ] `evaluation.py`
 - [ ] `loaders.py` （本轮也改动：新增`_load_trainable_records_for_loader`，给在线模式接入`record_filter`）
-- [ ] `online.py`
+- [x] `online.py`
 - [x] `samplers.py`
 
 ## 根目录

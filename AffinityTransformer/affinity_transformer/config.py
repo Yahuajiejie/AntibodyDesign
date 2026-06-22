@@ -264,7 +264,7 @@ class TrainConfig:
 
 @dataclass(frozen=True)
 class CrossValidationConfig:
-    """Group-isolated K-fold cross-validation settings.
+    """Protocol-aware K-fold cross-validation settings.
 
     ``source`` selects the development pool: ``train`` uses only
     ``data.train_path`` while ``train_valid`` combines the configured train
@@ -276,6 +276,9 @@ class CrossValidationConfig:
     n_splits: int = 5
     source: str = "train"
     seed: int = 0
+    protocol: str = "group_holdout"
+    min_eval_records: int = 2
+    require_train_group: bool = True
 
 
 @dataclass
@@ -304,6 +307,11 @@ _INTERACTION_KINDS = {"antibody_only", "concat", "deep_cross_attention"}
 _POOLING_KINDS = {"masked_mean", "attention_pool"}
 _OBJECTIVES = {"pointwise", "pairwise_ranknet", "listwise_listnet"}
 _CROSS_VALIDATION_SOURCES = {"train", "train_valid"}
+_CROSS_VALIDATION_PROTOCOLS = {
+    "group_holdout",
+    "antibody_cold_start",
+    "antigen_cold_start",
+}
 
 
 def load_config(path: Path) -> Config:
@@ -355,7 +363,7 @@ def _build_cross_validation_config(
     section: Any,
     data_config: DataConfig,
 ) -> CrossValidationConfig:
-    """Parse and validate the optional group K-fold section."""
+    """Parse and validate the optional protocol-aware K-fold section."""
     if section is None:
         return CrossValidationConfig()
     if not isinstance(section, dict):
@@ -368,6 +376,12 @@ def _build_cross_validation_config(
     n_splits = int(section.get("n_splits", 5))
     source = str(section.get("source", "train"))
     seed = int(section.get("seed", data_config.seed))
+    protocol = str(section.get("protocol", "group_holdout"))
+    min_eval_records = int(section.get("min_eval_records", 2))
+    require_train_group_raw = section.get("require_train_group", True)
+    if not isinstance(require_train_group_raw, bool):
+        raise ValueError("cross_validation.require_train_group must be true or false")
+    require_train_group = require_train_group_raw
 
     if n_splits < 2:
         raise ValueError("cross_validation.n_splits must be at least 2")
@@ -375,6 +389,18 @@ def _build_cross_validation_config(
         raise ValueError(
             "cross_validation.source must be one of "
             f"{sorted(_CROSS_VALIDATION_SOURCES)}, got {source!r}"
+        )
+    if protocol not in _CROSS_VALIDATION_PROTOCOLS:
+        raise ValueError(
+            "cross_validation.protocol must be one of "
+            f"{sorted(_CROSS_VALIDATION_PROTOCOLS)}, got {protocol!r}"
+        )
+    if min_eval_records < 2:
+        raise ValueError("cross_validation.min_eval_records must be at least 2")
+    if protocol != "antibody_cold_start" and not require_train_group:
+        raise ValueError(
+            "cross_validation.require_train_group=false only applies to "
+            "protocol='antibody_cold_start'"
         )
     if enabled:
         if data_config.split_strategy != "none":
@@ -394,6 +420,9 @@ def _build_cross_validation_config(
         n_splits=n_splits,
         source=source,
         seed=seed,
+        protocol=protocol,
+        min_eval_records=min_eval_records,
+        require_train_group=require_train_group,
     )
 
 

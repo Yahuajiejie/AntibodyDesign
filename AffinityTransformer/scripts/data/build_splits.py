@@ -22,14 +22,20 @@ from affinity_transformer.record_filter import (
 )
 from affinity_transformer.splits import (
     AUXILIARY_STRATEGIES,
+    ENTITY_COLD_START_STRATEGIES,
     VALID_STRATEGIES,
+    build_antibody_cold_start_split,
+    build_antigen_cold_start_split,
     build_splits,
     build_within_antigen_split,
+    write_entity_cold_start_split,
     write_splits,
     write_within_antigen_split,
 )
 
-_ALL_STRATEGIES = sorted(VALID_STRATEGIES | AUXILIARY_STRATEGIES)
+_ALL_STRATEGIES = sorted(
+    VALID_STRATEGIES | AUXILIARY_STRATEGIES | ENTITY_COLD_START_STRATEGIES
+)
 
 
 def main() -> None:
@@ -45,10 +51,17 @@ def main() -> None:
         type=int,
         default=5,
         help=(
-            "within_antigen_split only: minimum records a group must "
-            "contribute to BOTH valid and test for that group to be split "
-            "at all; smaller groups are pinned entirely to train (see "
-            "pinned_groups.csv)."
+            "within_antigen_split and strict entity cold-start protocols: "
+            "minimum protocol-eligible records required per evaluation group."
+        ),
+    )
+    parser.add_argument(
+        "--allow-new-experimental-group",
+        action="store_true",
+        help=(
+            "antibody_cold_start_split only: require a known exact antigen "
+            "but allow a holdout group_id absent from train. By default both "
+            "the exact antigen and group must occur in train."
         ),
     )
     parser.add_argument(
@@ -159,6 +172,38 @@ def main() -> None:
         print(f"valid rows={len(result.valid)}")
         print(f"test rows={len(result.test)}")
         print(f"groups pinned to train (too small to split): {len(result.pinned_groups)}")
+        print(f"split outputs -> {args.output_dir}")
+        return
+
+    if args.strategy in ENTITY_COLD_START_STRATEGIES:
+        if args.strategy == "antibody_cold_start_split":
+            result = build_antibody_cold_start_split(
+                records,
+                valid_fraction=args.valid_fraction,
+                test_fraction=args.test_fraction,
+                seed=args.seed,
+                min_eval_records=args.min_eval_records,
+                require_train_group=not args.allow_new_experimental_group,
+            )
+        else:
+            if args.allow_new_experimental_group:
+                raise ValueError(
+                    "--allow-new-experimental-group only applies to "
+                    "antibody_cold_start_split"
+                )
+            result = build_antigen_cold_start_split(
+                records,
+                valid_fraction=args.valid_fraction,
+                test_fraction=args.test_fraction,
+                seed=args.seed,
+                min_eval_records=args.min_eval_records,
+            )
+        write_entity_cold_start_split(result, args.output_dir)
+        print(f"strategy={args.strategy}")
+        print(f"train rows={len(result.train)}")
+        print(f"valid rows={len(result.valid)}")
+        print(f"test rows={len(result.test)}")
+        print(f"protocol-excluded rows={len(result.excluded_records)}")
         print(f"split outputs -> {args.output_dir}")
         return
 

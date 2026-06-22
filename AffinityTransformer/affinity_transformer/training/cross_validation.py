@@ -12,7 +12,12 @@ import pandas as pd
 
 from ..config import Config
 from ..dataset import filter_trainable_records, load_records
-from ..splits import build_group_kfolds
+from ..splits import (
+    EntityColdStartFold,
+    build_antibody_cold_start_kfolds,
+    build_antigen_cold_start_kfolds,
+    build_group_kfolds,
+)
 from ..utils import ensure_dir, set_seed
 
 TrainingRunner = Callable[
@@ -27,10 +32,14 @@ def run_group_kfold_cross_validation(
     output_dir: Path,
     runner: TrainingRunner,
 ) -> dict[str, float]:
-    """Train one independent model per group fold and aggregate validation metrics.
+    """Train one independent model per configured protocol fold.
 
     The configured test table is intentionally not passed to fold runners.
     It remains an untouched final holdout rather than being inspected K times.
+
+    The function name is retained for backwards compatibility. Configurations
+    that omit ``cross_validation.protocol`` keep the original group-isolated
+    behavior.
     """
     cv = config.cross_validation
     if not cv.enabled:
@@ -53,9 +62,31 @@ def run_group_kfold_cross_validation(
             f"{duplicates[:10]}"
         )
 
-    folds = build_group_kfolds(pool, n_splits=cv.n_splits, seed=cv.seed)
+    if cv.protocol == "group_holdout":
+        folds = build_group_kfolds(pool, n_splits=cv.n_splits, seed=cv.seed)
+    elif cv.protocol == "antibody_cold_start":
+        folds = build_antibody_cold_start_kfolds(
+            pool,
+            n_splits=cv.n_splits,
+            seed=cv.seed,
+            min_eval_records=cv.min_eval_records,
+            require_train_group=cv.require_train_group,
+        )
+    elif cv.protocol == "antigen_cold_start":
+        folds = build_antigen_cold_start_kfolds(
+            pool,
+            n_splits=cv.n_splits,
+            seed=cv.seed,
+            min_eval_records=cv.min_eval_records,
+        )
+    else:  # guarded by config validation
+        raise ValueError(f"unsupported cross-validation protocol: {cv.protocol!r}")
     output_dir = ensure_dir(output_dir)
     shutil.copyfile(config_path, output_dir / "config.yaml")
+    if folds and isinstance(folds[0], EntityColdStartFold):
+        folds[0].unit_assignments.to_parquet(
+            output_dir / "unit_assignments.parquet", index=False
+        )
 
     assignments = []
     fold_rows: list[dict[str, float | int]] = []
@@ -72,14 +103,34 @@ def run_group_kfold_cross_validation(
         fold.train.to_parquet(train_path, index=False)
         fold.valid.to_parquet(valid_path, index=False)
 
-        assignments.extend(
-            {
-                "record_id": str(row.record_id),
-                "group_id": str(row.group_id),
-                "fold": fold.index + 1,
-            }
-            for row in fold.valid[["record_id", "group_id"]].itertuples(index=False)
-        )
+        if isinstance(fold, EntityColdStartFold):
+            fold.eligibility_report.to_csv(
+                fold_dir / "eligibility_report.csv", index=False
+            )
+            fold.leakage_report.to_csv(fold_dir / "leakage_report.csv", index=False)
+            fold.excluded_records.to_parquet(
+                fold_dir / "excluded_records.parquet", index=False
+            )
+
+        if isinstance(fold, EntityColdStartFold):
+            assignments.extend(
+                {
+                    "record_id": str(row.record_id),
+                    "group_id": str(row.group_id),
+                    "fold": fold.index + 1,
+                    "protocol": fold.protocol,
+                }
+                for row in fold.valid[["record_id", "group_id"]].itertuples(index=False)
+            )
+        else:
+            assignments.extend(
+                {
+                    "record_id": str(row.record_id),
+                    "group_id": str(row.group_id),
+                    "fold": fold.index + 1,
+                }
+                for row in fold.valid[["record_id", "group_id"]].itertuples(index=False)
+            )
         metrics = runner(
             config_path,
             config,
@@ -93,6 +144,11 @@ def run_group_kfold_cross_validation(
                 "fold": fold.index + 1,
                 "n_train_records": len(fold.train),
                 "n_valid_records": len(fold.valid),
+                "n_excluded_records": (
+                    len(fold.excluded_records)
+                    if isinstance(fold, EntityColdStartFold)
+                    else 0
+                ),
                 **metrics,
             }
         )
