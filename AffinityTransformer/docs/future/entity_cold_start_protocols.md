@@ -223,7 +223,7 @@ resolution
 
 README 中的四种实体问题与 group 工程基线分别实现。协议名称、输出目录和指标名称必须一致。
 
-### 5.1 Pair holdout：已见抗原、已见抗体
+### 5.1 Pair holdout：已见抗原、已见抗体（不着急实现）
 
 Pair holdout 只用于 transductive diagnostic。抗原、抗体、record 和 measurement family 可以重复，但同一个规范化比较关系不能同时进入 train 和 valid/test。
 

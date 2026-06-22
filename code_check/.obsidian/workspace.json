@@ -11,14 +11,10 @@
             "id": "18d9477d263a1595",
             "type": "leaf",
             "state": {
-              "type": "markdown",
-              "state": {
-                "file": "单元测试/质检training.md",
-                "mode": "source",
-                "source": false
-              },
+              "type": "empty",
+              "state": {},
               "icon": "lucide-file",
-              "title": "质检training"
+              "title": "新标签页"
             }
           }
         ]
@@ -185,17 +181,17 @@
   },
   "active": "18d9477d263a1595",
   "lastOpenFiles": [
-    "单元测试/质检dataset.md",
+    "欢迎.md",
     "单元测试/质检training.md",
     "单元测试/质检splits.md",
-    "单元测试/质检embeddings.md",
-    "单元测试/质检config.md",
     "单元测试/质检model.md",
     "单元测试/质检matrics.md",
+    "单元测试/质检embeddings.md",
+    "单元测试/质检dataset.md",
+    "单元测试/质检config.md",
+    "单元测试",
     "未命名",
-    "欢迎.md",
     "单元测试/embeddings~.md",
-    "单元测试/embeddings.md",
-    "单元测试"
+    "单元测试/embeddings.md"
   ]
 }
