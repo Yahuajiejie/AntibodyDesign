@@ -97,6 +97,26 @@ class EntityColdStartFold:
     unit_assignments: pd.DataFrame
 
 
+@dataclass
+class DualColdStartSplitResult:
+    """Fixed train/valid/test artifacts for the Dual cold-start protocol.
+
+    Same fields as an entity split plus ``component_summary`` -- the preflight
+    per-component feasibility statistics (largest-component first).
+    """
+
+    protocol: str
+    train: pd.DataFrame
+    valid: pd.DataFrame
+    test: pd.DataFrame
+    summary: pd.DataFrame
+    leakage_report: pd.DataFrame
+    eligibility_report: pd.DataFrame
+    excluded_records: pd.DataFrame
+    unit_assignments: pd.DataFrame
+    component_summary: pd.DataFrame
+
+
 def write_splits(result: SplitResult, output_dir: Path) -> None:
     """Write split records and QC reports to `output_dir`."""
     output_dir = ensure_dir(Path(output_dir))
@@ -264,3 +284,78 @@ def write_antigen_cold_start_split(
     return _write_cold_start_artifacts(
         result, output_dir, manifest=manifest, debug=debug
     )
+
+
+def build_dual_cold_start_manifest(
+    *,
+    seed: int,
+    valid_fraction: float,
+    test_fraction: float,
+    min_eval_records: int,
+    input_records_hash: str,
+    entity_annotations_hash: str,
+    representation_annotations_hash: str | None,
+    effective_input_audited: bool,
+    component_summary: pd.DataFrame,
+) -> dict[str, object]:
+    """Build the ``split_manifest.yaml`` payload for a dual cold-start split.
+
+    ``component_summary`` (largest-component first) supplies ``n_components`` and
+    the largest-component fractions reported in the manifest.
+    """
+    if component_summary.empty:
+        largest = {
+            "record_fraction": 0.0, "group_fraction": 0.0,
+            "antibody_cluster_fraction": 0.0, "antigen_cluster_fraction": 0.0,
+        }
+    else:
+        largest = component_summary.iloc[0]
+    return {
+        "protocol": "dual_cold_start",
+        "seed": int(seed),
+        "valid_fraction": float(valid_fraction),
+        "test_fraction": float(test_fraction),
+        "min_eval_records": int(min_eval_records),
+        "input_records_hash": str(input_records_hash),
+        "entity_annotations_hash": str(entity_annotations_hash),
+        "representation_annotations_hash": (
+            None if representation_annotations_hash is None
+            else str(representation_annotations_hash)
+        ),
+        "effective_input_audited": bool(effective_input_audited),
+        "n_components": int(len(component_summary)),
+        "largest_component_record_fraction": float(largest["record_fraction"]),
+        "largest_component_group_fraction": float(largest["group_fraction"]),
+        "largest_component_antibody_cluster_fraction": float(
+            largest["antibody_cluster_fraction"]
+        ),
+        "largest_component_antigen_cluster_fraction": float(
+            largest["antigen_cluster_fraction"]
+        ),
+    }
+
+
+def write_dual_cold_start_split(
+    result: DualColdStartSplitResult,
+    output_dir: Path,
+    *,
+    manifest: dict[str, object],
+    debug: bool = False,
+) -> Path:
+    """Write dual cold-start split files, audits, manifest, and component summary.
+
+    Reuses the shared cold-start artifact writer and adds ``component_summary.csv``
+    (the preflight feasibility statistics).
+    """
+    if result.protocol != "dual_cold_start":
+        raise ValueError(
+            f"write_dual_cold_start_split expects a dual_cold_start result, "
+            f"got protocol={result.protocol!r}"
+        )
+    output_dir = _write_cold_start_artifacts(
+        result, output_dir, manifest=manifest, debug=debug
+    )
+    result.component_summary.to_csv(
+        output_dir / "component_summary.csv", index=False
+    )
+    return output_dir

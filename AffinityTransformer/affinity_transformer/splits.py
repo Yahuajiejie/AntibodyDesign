@@ -30,8 +30,10 @@ from .splitting.entity_cold_start import (
     build_antigen_cold_start_kfolds,
     build_antigen_cold_start_split,
 )
+from .splitting.dual_cold_start import build_dual_cold_start_split
 from .splitting.group import build_group_kfolds
 from .splitting.results import (
+    DualColdStartSplitResult,
     EntityColdStartFold,
     EntityColdStartSplitResult,
     GroupFold,
@@ -39,8 +41,10 @@ from .splitting.results import (
     WithinAntigenSplitResult,
     build_antibody_cold_start_manifest,
     build_antigen_cold_start_manifest,
+    build_dual_cold_start_manifest,
     write_antibody_cold_start_split,
     write_antigen_cold_start_split,
+    write_dual_cold_start_split,
     write_entity_cold_start_split,
     write_splits,
     write_within_antigen_split,
@@ -64,6 +68,7 @@ __all__ = [
     "GroupFold",
     "EntityColdStartSplitResult",
     "EntityColdStartFold",
+    "DualColdStartSplitResult",
     # generic fixed splits + group K-fold
     "build_splits",
     "write_splits",
@@ -81,6 +86,9 @@ __all__ = [
     "write_antigen_cold_start_split",
     "build_antibody_cold_start_manifest",
     "build_antigen_cold_start_manifest",
+    "build_dual_cold_start_split",
+    "write_dual_cold_start_split",
+    "build_dual_cold_start_manifest",
     # shared helpers re-exported for existing call sites
     "frame_hash",
     "_select_protocol_eligible_records",

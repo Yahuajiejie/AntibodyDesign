@@ -34,6 +34,55 @@ def frame_hash(frame: pd.DataFrame) -> str:
     return hashlib.sha256(row_hashes.values.tobytes()).hexdigest()
 
 
+def derive_link_components(
+    records: pd.DataFrame,
+    link_columns: tuple[str, ...],
+) -> pd.Series:
+    """Assign each record to a connected component via union-find over links.
+
+    Records sharing any value in any of ``link_columns`` are unioned; the full
+    transitive closure forms one indivisible component. The component id is a
+    deterministic hash of its sorted ``record_id`` set, so the labelling is
+    stable across runs and input orderings.
+
+    Returns:
+        A Series (aligned to ``records.index``) of ``component_<hash>`` ids.
+    """
+    n_records = len(records)
+    parent = list(range(n_records))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    for column in link_columns:
+        for positions in records.groupby(column, sort=False).indices.values():
+            positions = list(positions)
+            for position in positions[1:]:
+                union(int(positions[0]), int(position))
+
+    root_to_record_ids: dict[int, list[str]] = {}
+    for position, record_id in enumerate(records["record_id"].astype(str)):
+        root_to_record_ids.setdefault(find(position), []).append(record_id)
+    root_to_component = {
+        root: "component_" + hashlib.sha256(
+            "\n".join(sorted(record_ids)).encode("utf-8")
+        ).hexdigest()[:16]
+        for root, record_ids in root_to_record_ids.items()
+    }
+    return pd.Series(
+        [root_to_component[find(position)] for position in range(n_records)],
+        index=records.index,
+    )
+
+
 def _assign_component_splits(
     records: pd.DataFrame,
     *,

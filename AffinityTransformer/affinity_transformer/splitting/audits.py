@@ -112,6 +112,77 @@ def _coverage_report(
     }
 
 
+def build_group_eligibility(
+    holdout: pd.DataFrame,
+    *,
+    split_name: str,
+    min_eval_records: int,
+    input_column: str = "antibody_sequence_key",
+    label_column: str = "rank_label",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Filter a holdout to evaluable groups (no seen-in-train logic).
+
+    A ``group_id`` is evaluable when it has at least ``min_eval_records``
+    records, two distinct ``input_column`` values, and two distinct numeric
+    ``label_column`` values. Records in non-evaluable groups are returned in the
+    excluded frame with a ``protocol_exclusion_reason``.
+
+    Returns:
+        ``(eligible, report, excluded)`` where ``report`` uses
+        ``ELIGIBILITY_COLUMNS`` and ``excluded`` carries the original columns
+        plus ``protocol_exclusion_reason``.
+    """
+    eligible_groups: set[str] = set()
+    group_failure_reasons: dict[str, str] = {}
+    report_rows: list[dict[str, object]] = []
+    for group_id, assigned_group in holdout.groupby(
+        holdout["group_id"].astype(str), sort=True
+    ):
+        labels = pd.to_numeric(assigned_group[label_column], errors="coerce")
+        n_unique_inputs = int(assigned_group[input_column].astype(str).nunique())
+        n_unique_labels = int(labels.nunique())
+        failures = []
+        if len(assigned_group) < min_eval_records:
+            failures.append(f"fewer_than_{min_eval_records}_protocol_records")
+        if n_unique_inputs < 2:
+            failures.append("fewer_than_2_unique_antibody_inputs")
+        if n_unique_labels < 2:
+            failures.append("fewer_than_2_unique_labels")
+        status = "PASS" if not failures else "EXCLUDED"
+        if not failures:
+            eligible_groups.add(str(group_id))
+        else:
+            group_failure_reasons[str(group_id)] = ";".join(failures)
+        report_rows.append({
+            "split": split_name,
+            "group_id": str(group_id),
+            "n_assigned_records": int(len(assigned_group)),
+            "n_candidate_records": int(len(assigned_group)),
+            "n_eligible_records": int(len(assigned_group)) if not failures else 0,
+            "n_unique_inputs": n_unique_inputs,
+            "n_unique_labels": n_unique_labels,
+            "status": status,
+            "reason": ";".join(failures),
+        })
+
+    eligible = holdout.loc[
+        holdout["group_id"].astype(str).isin(eligible_groups)
+    ].copy()
+    eligible_ids = set(eligible["record_id"].astype(str))
+    excluded = holdout.loc[
+        ~holdout["record_id"].astype(str).isin(eligible_ids)
+    ].copy()
+    if not excluded.empty:
+        excluded["protocol_exclusion_reason"] = [
+            "group_not_evaluable:" + group_failure_reasons.get(
+                str(group_id), "no_protocol_eligible_records"
+            )
+            for group_id in excluded["group_id"].astype(str)
+        ]
+    report = pd.DataFrame(report_rows, columns=ELIGIBILITY_COLUMNS)
+    return eligible, report, excluded
+
+
 def _build_unit_assignments(
     assigned: pd.DataFrame,
     *,
