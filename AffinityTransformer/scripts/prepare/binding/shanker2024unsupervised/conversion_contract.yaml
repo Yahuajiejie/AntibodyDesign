@@ -1,0 +1,52 @@
+study_id: shanker2024unsupervised
+paper: "Shanker et al., Science 385:46-53, 2024 (DOI 10.1126/science.adk8946)"
+antibodies:
+  Ly1404: "LY-CoV1404 (bebtelovimab) + ESM-IF1-evolved variants"   # source: paper
+  SA58: "BD55-5840 + ESM-IF1-evolved variants"                     # source: paper
+label_kind: experimental          # source: raw
+common_rules:
+  row_expansion: "one record per raw row (WT parent + designed variants)"  # source: repository_convention
+  antibody_fields:
+    heavy_chain: "raw column 'heavy' (VH)"           # source: raw
+    light_chain: "raw column 'light' (VL)"           # source: raw
+    antibody_type: IgG                               # source: paper (clinical IgG antibodies)
+    antibody_id: "raw 'design'/'Design' column (WT or mutation name)"  # source: raw
+  metric_direction: higher_is_better                 # source: deterministic_transformation
+  missing_value_handling: "null light allowed; non-finite -log10 -> rank_label null -> dropped"  # source: repository_convention
+  keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+  drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+
+ic50_tables:
+  metric_name: neg_log10_ic50
+  metric_unit: "-log10(IC50 ng/µL)"                  # source: raw (column 'Avg Neutralization IC50 (ng/µL)')
+  rank_label_rule: "rank_label = -log10(fitness); fitness = avg neutralization IC50 in ng/µL"  # source: deterministic_transformation
+  assay_type: neutralization
+  tables:
+    - {table_id: Ly1404_Wuhan_IC50, antigen_key: CoV2_Wuhan_RBD, antigen_source: retrieved, antigen_sequence: "P0DTC2 aa319-541 (223 aa)", expected_output_count: 32}  # antigen source: official_database (verified); count source: raw (README's 33 off by one)
+    - {table_id: Ly1404-BQ.1.1_IC50, antigen_key: CoV2_BQ11_Spike, antigen_source: missing, antigen_sequence: null, expected_output_count: 50}   # antigen: unresolved (variant seq derivable but kept missing)
+    - {table_id: SA58-BA.1_IC50, antigen_key: CoV2_BA1_Spike, antigen_source: missing, antigen_sequence: null, expected_output_count: 19}
+    - {table_id: SA58-BQ.1.1_IC50, antigen_key: CoV2_BQ11_Spike, antigen_source: missing, antigen_sequence: null, expected_output_count: 49}
+  group_id_rule: "shanker2024unsupervised/<table_id>/<antigen_key>/neg_log10_ic50/experimental"  # source: repository_convention
+
+kd_tables:
+  metric_name: neg_log10_kd_M
+  metric_unit: "-log10(KD/M)"                         # source: raw (column 'Kd avg (M)')
+  rank_label_rule: "rank_label = -log10(fitness); fitness = Kd avg in M"  # source: deterministic_transformation
+  assay_type: binding   # SPR
+  tables:
+    - {table_id: Ly1404-BQ.1.1_Kd, antigen_key: CoV2_BQ11_RBD, antigen_source: missing, antigen_sequence: null, expected_output_count: 36}
+    - {table_id: SA58-BQ.1.1_Kd, antigen_key: CoV2_BQ11_RBD, antigen_source: missing, antigen_sequence: null, expected_output_count_raw: 7}   # contains a Kd=0 sentinel -> dropped; see sentinel_policy
+    - {table_id: SA58-XBB.1.5_Kd, antigen_key: CoV2_XBB15_RBD, antigen_source: missing, antigen_sequence: null, expected_output_count_raw: 30}  # contains Kd=7.64e+19 sentinel; 4 duplicate (h,l)
+  group_id_rule: "shanker2024unsupervised/<table_id>/<antigen_key>/neg_log10_kd_M/experimental"  # source: repository_convention
+
+unresolved:
+  sentinel_policy:
+    issue: "Non-physical Kd values: SA58-XBB.1.5_Kd has 7.64e+19 (kept as rank_label ~ -19.9); SA58-BQ.1.1_Kd has 0 (-log10(0)=inf -> dropped). Inconsistent."
+    required_decision: "Adopt ONE explicit no-binding policy (drop both, or encode both as a defined non-binder floor). Do not silently keep 7.64e+19 as a real affinity."
+    source: unresolved
+  variant_antigen_sequences:
+    issue: "BA.1/BQ.1.1/XBB.1.5 RBD/spike sequences are derivable but kept missing; only Wuhan retrieved."
+    source: unresolved
+  ic50_unit:
+    note: "IC50 in ng/µL is relative potency (monotonic for ranking), not molar-comparable."
+    source: repository_convention

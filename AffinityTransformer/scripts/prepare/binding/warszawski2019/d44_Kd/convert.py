@@ -3,7 +3,8 @@
 
 Study:      warszawski2019
 Table:      d44_Kd
-Antigen:    Vascular endothelial growth factor A (VEGF-A)
+Antigen:    Hen egg-white lysozyme (HEL) -- D44.1 is an anti-lysozyme antibody
+            (PDB 1MLC). Corrects a prior VEGF-A copy-paste error.
 rank_label: fitness = -log10(KD/nM) (confirmed from -log(Kd[nM]) column)
 """
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -11,11 +12,11 @@ STUDY_ID       = "warszawski2019"
 TABLE_ID       = "d44_Kd"
 SOURCE_FILE    = "data/binding/warszawski2019_d44_Kd.csv"
 ANTIBODY_TYPE  = "Fv"   # Fv | Fab | IgG | scFv | VHH | unknown
-ANTIGEN_KEY    = "VEGF_A"
-ANTIGEN_NAME   = "Vascular endothelial growth factor A (VEGF-A)"
-ANTIGEN_SEQ    = "APMAEGGGQNHHEVVKFMDVYQRSYCHPIETLVDIFQEYPDEIEYIFKPSCVPLMRCGGCCNDEGLECVPTEESNITMQIMRIKPHQGQHIGEMSFLQHNKCECRPKKDRARQENPCGPCSERRKHLFVQDPQTCKCSCKNTDSRCKARQLELNERTCRCDKPRR"
+ANTIGEN_KEY    = "HEL"
+ANTIGEN_NAME   = "Hen egg lysozyme"
+ANTIGEN_SEQ    = "KVFGRCELAAAMKRHGLDNYRGYSLGNWVCAAKFESNFNTQATNRNTDGSTDYGILQINSRWWCNDGRTPGSRNLCNIPCSALLSSDITASVNCAKKIVSDGNGMNAWVAWRNRCKGTDVQAWIRGCRL"
 ANTIGEN_SOURCE = "retrieved"
-ANTIGEN_SOURCE_NOTE = "retrieved: UniProt P15692 (VEGFA_HUMAN), VEGF165 mature sequence reconstructed from long isoform coordinates aa207-320 + aa346-395 with VEGF165 inserted N"
+ANTIGEN_SOURCE_NOTE = "retrieved: UniProt P00698 (LYSC_CHICK), mature chain aa19-147 (129 aa). D44.1 is the anti-hen-egg-white-lysozyme antibody (PDB 1MLC; WT Kd ~137 nM). Corrects a prior VEGF-A copy-paste error."
 ASSAY_NAME     = "SPR"
 METRIC_NAME    = "neg_log10_kd_nM"
 METRIC_UNIT    = "-log10(KD/nM)"

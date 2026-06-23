@@ -62,8 +62,13 @@ def convert(src: Path, out: Path) -> None:
     for i, row in df.iterrows():
         sr = int(i) + 2   # 1-indexed row; +1 for header
 
-        heavy = _seq(row.get("heavy"))
-        light = _seq(row.get("light"))
+        # VERIFIED CORRECTION (Phase 2 dossier): the raw column named "heavy"
+        # actually holds the VL (DVVMTQ... kappa) and the column named "light"
+        # holds the VH (EVKL...). Confirmed by 4-4-20 biology (PNAS
+        # 10.1073/pnas.0603282103) and by cross-checking the same antibody in
+        # adams2017measuring (correctly ordered there). Map by true chain type.
+        heavy = _seq(row.get("light"))   # raw "light" column = VH
+        light = _seq(row.get("heavy"))   # raw "heavy" column = VL
         raw = row.get(FITNESS_COL)
 
         try:

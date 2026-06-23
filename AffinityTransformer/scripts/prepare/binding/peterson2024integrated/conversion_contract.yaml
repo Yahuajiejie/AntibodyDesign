@@ -1,0 +1,58 @@
+study_id: peterson2024integrated
+paper: "Petersen et al., Nat Commun 15:3974, 2024 (DOI 10.1038/s41467-024-48072-z); MAGMA-seq"
+antibody: "human Fab libraries vs influenza H1 HA (VH+VL provided)"
+
+tables:
+  - table_id: ab_H1HA_kd
+    raw_file: data/binding/peterson2024integrated_ab_H1HA_kd.csv
+    raw_columns: ["heavy", "light", "KD", "fitness"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"          # source: raw
+      light_chain: "raw column 'light' (VL)"          # source: raw
+      antibody_type: Fab                              # source: paper (was IgG in converter — recommend Fab)
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: H1_HA
+      antigen_name: "Influenza A H1 hemagglutinin"
+      antigen_sequence: null                          # source: unresolved (exact strain/construct not confirmed) -> missing
+      antigen_source: missing
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = -log10(fitness * 1e-9); fitness = apparent K_D in nM"  # source: paper (nM) + deterministic_transformation
+    label_kind: experimental                          # source: paper
+    group_id_rule: "peterson2024integrated/ab_H1HA_kd/H1_HA/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 1040                        # source: raw (exact)
+    caveats:
+      - "K_D unit is nM (verified from paper); converter converts nM->M before -log10."  # source: paper
+
+  - table_id: ab_H1HA_binary
+    raw_file: data/binding/peterson2024integrated_ab_H1HA_binary.csv
+    raw_columns: ["heavy", "light", "KD", "fitness"]
+    row_expansion: "one record per raw row"
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"
+      light_chain: "raw column 'light' (VL)"
+      antibody_type: Fab                              # source: paper (was IgG)
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: H1_HA
+      antigen_name: "Influenza A H1 hemagglutinin"
+      antigen_sequence: null
+      antigen_source: missing
+    metric_name: binary
+    metric_unit: "0/1"
+    metric_direction: higher_is_better                # source: raw (1 = bind)
+    rank_label_rule: "rank_label = float(fitness); fitness in {0,1} (1 = bind, 0 = no bind)"  # source: raw
+    label_kind: binary                                # source: raw/paper
+    group_id_rule: "peterson2024integrated/ab_H1HA_binary/H1_HA/binary/binary"  # source: repository_convention
+    missing_value_handling: "non-{0,1}/blank -> rank_label null"
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 1071                        # source: raw (exact)
+    caveats:
+      - "binary label: keep as separate label_kind/group; never pool into continuous Spearman."  # source: repository_convention

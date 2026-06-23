@@ -1,0 +1,34 @@
+study_id: warszawski2019
+paper: "Warszawski et al., PLoS Comput Biol 15(8):e1007207, 2019 (DOI 10.1371/journal.pcbi.1007207)"
+antibody: "D44.1 mouse monoclonal anti-hen-egg-white-lysozyme, DMS variants (VH+VL)"
+label_kind: experimental          # source: raw
+
+tables:
+  - table_id: d44_Kd
+    raw_file: data/binding/warszawski2019_d44_Kd.csv
+    raw_columns: ["heavy", "light", "KD (nM)", "-log10 (KD (M) )", "fitness", "-log(Kd [nM])"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH, QVQL…)"   # source: raw
+      light_chain: "raw column 'light' (VL, DIEL…)"   # source: raw
+      antibody_type: Fv                               # source: paper (D44.1 Fab; variable domains provided)
+      single_chain_sequence: null
+    antigen_fields:                                   # CORRECTION: was VEGF_A (wrong, copy-paste from koenig)
+      antigen_key: HEL                                # source: paper + official_database (PDB 1MLC)
+      antigen_name: "Hen egg lysozyme"
+      antigen_sequence: "UniProt P00698 mature aa19-147 (129 aa) = KVFGRCEL...IRGCRL"  # source: official_database (verified)
+      antigen_source: retrieved
+    metric_name: neg_log10_kd_nM
+    metric_unit: "-log10(KD/nM)"                      # source: raw (fitness == -log(Kd[nM]) column)
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = fitness = -log10(K_D[nM])"   # source: deterministic_transformation
+    group_id_rule: "warszawski2019/d44_Kd/HEL/neg_log10_kd_nM/experimental"  # source: repository_convention (uses corrected antigen_key)
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 2048                        # source: raw (exact; README's 2049 is off by one)
+    required_corrections:
+      - "Replace VEGF-A antigen block with HEL (key/name/sequence/source-note) and rebuild group_id."  # source: paper+PDB (verified)
+    caveats:
+      - "metric unit is nM-based (-log10 Kd/nM); offset +9 vs M-based tables, ranking unaffected."  # source: raw
+      - "assay_name 'SPR' unverified (yeast-display titration/DMS); metadata only."  # source: unresolved

@@ -1,0 +1,32 @@
+study_id: garbinski2023
+paper: "none located; source = GSK (internal), per data/binding/README.md"
+antibody: "paired VH+VL variants (origin not disclosed)"
+label_kind: experimental          # source: raw (real K_D)
+
+tables:
+  - table_id: kd
+    raw_file: data/binding/garbinski2023_kd.csv
+    raw_columns: ["heavy", "light", "KD", "-log (KD (M) )", "fitness"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"          # source: raw
+      light_chain: "raw column 'light' (VL)"          # source: raw
+      antibody_type: Fv                               # source: raw (paired chains; format not disclosed)
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: unknown_antigen
+      antigen_name: "Unknown proprietary antigen"
+      antigen_sequence: null                          # source: unresolved (proprietary, undisclosed)
+      antigen_source: missing
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = fitness = -log10(K_D[M])"   # source: deterministic_transformation
+    group_id_rule: "garbinski2023/kd/unknown_antigen/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 81                          # source: raw (exact; corrects earlier 80)
+    caveats:
+      - "Antigen identity proprietary/undisclosed -> antigen_source=missing; cannot verify."  # source: unresolved
+      - "Single-group assumption (all 81 share one antigen) is unverifiable."                  # source: unresolved

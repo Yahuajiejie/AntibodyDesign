@@ -1,0 +1,59 @@
+study_id: adams2017measuring
+paper: "Adams et al., eLife 2016/2017, e23156 (DOI 10.7554/eLife.23156)"
+antibody: "4-4-20 anti-fluorescein scFv (PDB 1FLR), CDR1H/CDR3H variant libraries"
+antigen: "fluorescein (small-molecule hapten; no protein sequence)"
+label_kind: experimental          # source: paper
+
+tables:
+  - table_id: 4420-fluorescein_kd-flow
+    raw_file: data/binding/adams2017measuring_4420-fluorescein_kd-flow.csv
+    raw_columns: ["Kd (flow) [M]", "heavy", "light", "format", "fitness"]
+    row_expansion: "one record per raw row"        # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH, EVKL…)"  # source: raw (orientation verified vs canonical 4-4-20)
+      light_chain: "raw column 'light' (VL, DVVMTQ…)" # source: raw
+      antibody_type: scFv                            # source: raw 'format' col + paper
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: Fluorescein
+      antigen_name: "Fluorescein (small molecule)"
+      antigen_sequence: null                         # source: paper (hapten, no sequence)
+      antigen_source: missing
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better               # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = -log10(fitness); fitness = raw K_D in M"  # source: deterministic_transformation
+    group_id_rule: "adams2017measuring/4420-fluorescein_kd-flow/Fluorescein/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite/blank fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 15                          # source: raw (exact)
+
+  - table_id: 4420-fluorescein_kd-titeseq
+    raw_file: data/binding/adams2017measuring_4420-fluorescein_kd-titeseq.csv
+    raw_columns: ["Kd (Tite-Seq) [M]", "heavy", "light", "format", "fitness"]
+    row_expansion: "one record per raw row"
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"
+      light_chain: "raw column 'light' (VL)"
+      antibody_type: scFv
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: Fluorescein
+      antigen_name: "Fluorescein (small molecule)"
+      antigen_sequence: null
+      antigen_source: missing
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better
+    rank_label_rule: "rank_label = -log10(fitness); fitness = raw K_D in M"
+    group_id_rule: "adams2017measuring/4420-fluorescein_kd-titeseq/Fluorescein/neg_log10_kd_M/experimental"
+    missing_value_handling: "same as flow table"
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 11052                       # source: raw (exact)
+    caveats:
+      - "8245 duplicate (heavy,light) pairs present; treat as later-stage replicate/measurement-family question, not a base-records change."  # source: raw
+
+notes:
+  - "Remove unused KD_COL constant during implementation (dead code; output uses 'fitness')."  # source: repository_convention

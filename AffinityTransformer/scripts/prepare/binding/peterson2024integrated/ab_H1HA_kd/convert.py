@@ -28,7 +28,7 @@ def _seq(val) -> "str | None":
 STUDY_ID       = "peterson2024integrated"
 TABLE_ID       = "ab_H1HA_kd"
 SOURCE_FILE    = "data/binding/peterson2024integrated_ab_H1HA_kd.csv"
-ANTIBODY_TYPE  = "IgG"
+ANTIBODY_TYPE  = "Fab"   # MAGMA-seq human Fab libraries (Petersen 2024, Nat Commun 15:3974)
 ANTIGEN_KEY    = "H1_HA"
 ANTIGEN_NAME   = "Influenza A H1 hemagglutinin"
 ANTIGEN_SEQ    = None

@@ -1,0 +1,31 @@
+study_id: koenig2017mutational
+paper: "Koenig et al., PNAS 114(4):E486-E495, 2017 (DOI 10.1073/pnas.1613231114)"
+antibody: "G6.31 anti-VEGF-A, variable-domain DMS variants (VH+VL)"
+label_kind: experimental          # source: raw
+
+tables:
+  - table_id: kd_g6
+    raw_file: data/binding/koenig2017mutational_kd_g6.csv
+    raw_columns: ["heavy", "light", "-ln(KD (nM) )", "KD (nM)", "KD (M)", "-log( KD (M) )", "fitness"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"          # source: raw
+      light_chain: "raw column 'light' (VL)"          # source: raw
+      antibody_type: Fv                               # source: paper (G6.31 Fab; variable domains provided)
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: VEGF_A
+      antigen_name: "Vascular endothelial growth factor A (VEGF-A)"
+      antigen_sequence: "current converter VEGF165 reconstruction — TARGET verified, exact construct UNRESOLVED"  # source: unresolved (needs paper/supplement + UniProt P15692 verification)
+      antigen_source: retrieved
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"                       # source: raw (fitness == -log(KD(M)) column)
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = fitness = -log10(K_D[M])"   # source: deterministic_transformation
+    group_id_rule: "koenig2017mutational/kd_g6/VEGF_A/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 4275                        # source: raw (~4275; README's 4276 off by one; confirm at run)
+    caveats:
+      - "VEGF antigen_sequence is a non-standard reconstruction; re-verify exact construct (likely VEGF8-109 RBD) before trusting the residues."  # source: unresolved

@@ -1,0 +1,56 @@
+study_id: kirby2024retrospective
+paper: "Kirby et al., PNAS 2025 (DOI 10.1073/pnas.2412787122); Whitehead lab, U Colorado"
+antibody: "human anti-SARS-CoV-2 Spike antibodies (8 lineages incl. CC12.1, 1-20) + trajectory variants"
+antigen_common:
+  antigen_key: CoV2_Wuhan_RBD
+  antigen_name: "SARS-CoV-2 Wuhan-Hu-1 spike receptor-binding domain"
+  antigen_sequence: "UniProt P0DTC2 aa319-541 (223 aa)"   # source: official_database (verified length)
+  antigen_source: retrieved
+
+tables:
+  - table_id: ab-SARSCoV2_kd
+    raw_file: data/binding/kirby2024retrospective_ab-SARSCoV2_kd.csv
+    raw_columns: ["heavy", "light", "Kd [M]"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"          # source: raw
+      light_chain: "raw column 'light' (VL)"          # source: raw
+      antibody_type: IgG                              # source: paper (human IgG)
+      single_chain_sequence: null
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = -log10(value * 1e-9); 'Kd [M]' column values are nM (header mislabeled)"  # source: raw data range + paper/lab convention
+    label_kind: experimental                          # source: paper
+    group_id_rule: "kirby2024retrospective/ab-SARSCoV2_kd/CoV2_Wuhan_RBD/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite -log10 -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 869                         # source: raw (exact)
+    caveats:
+      - "K_D unit is nM despite 'Kd [M]' header (values 3.3-2950, median 36); converter converts nM->M."  # source: raw + paper
+      - "253 duplicate (heavy,light) pairs -> replicates; one record per raw row (annotation-stage aggregation)."  # source: raw
+      - "Up to 8 antibody lineages pooled in one group keyed on the shared Wuhan RBD antigen."  # source: unresolved (grouping)
+
+  - table_id: ab-SARSCoV2_binary_kd
+    raw_file: data/binding/kirby2024retrospective_ab-SARSCoV2_binary_kd.csv
+    raw_columns: ["heavy", "light", "KD [bind/no bind]"]
+    row_expansion: "one record per raw row"
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"
+      light_chain: "raw column 'light' (VL)"
+      antibody_type: IgG
+      single_chain_sequence: null
+    metric_name: binary
+    metric_unit: "0/1"
+    metric_direction: higher_is_better                # source: raw (1 = bind)
+    rank_label_rule: "rank_label = float(value); value in {0,1} (1 = bind, 0 = no bind)"  # source: raw
+    label_kind: binary                                # source: raw
+    group_id_rule: "kirby2024retrospective/ab-SARSCoV2_binary_kd/CoV2_Wuhan_RBD/binary/binary"  # source: repository_convention
+    missing_value_handling: "non-{0,1}/blank -> rank_label null"
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 1407                        # source: raw (exact)
+    caveats:
+      - "binary label: keep as separate label_kind/group; never pool into continuous Spearman."  # source: repository_convention
+      - "368 duplicate (heavy,light) pairs -> replicates (annotation-stage)."  # source: raw

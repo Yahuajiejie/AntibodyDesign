@@ -1,0 +1,57 @@
+study_id: jain2024assessment
+paper: "Jain et al., mAbs 16(1) 2024 (DOI 10.1080/19420862.2024.2384104)"
+antibody: "germline-derived human antibody panels (VH+VL provided)"
+label_kind: experimental          # source: paper
+
+tables:
+  - table_id: Hen_Lys_kd
+    raw_file: data/binding/jain2024assessment_Hen_Lys_kd.csv
+    raw_columns: ["heavy", "light", "Octet b-Hen Lysozyme Kd Monovalent (M)", "neg_log_kd", "fitness"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"          # source: raw
+      light_chain: "raw column 'light' (VL)"          # source: raw
+      antibody_type: IgG                              # source: paper (developability format)
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: HEL
+      antigen_name: "Hen egg lysozyme"
+      antigen_sequence: "UniProt P00698 mature aa19-147 (129 aa)"   # source: official_database (verified exact match)
+      antigen_source: retrieved
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = fitness = neg_log_kd = -log10(K_D monovalent [M])"  # source: deterministic_transformation
+    group_id_rule: "jain2024assessment/Hen_Lys_kd/HEL/neg_log10_kd_M/experimental"     # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 31                          # source: raw (exact)
+
+  - table_id: mouse_Ly_kd
+    raw_file: data/binding/jain2024assessment_mouse_Ly_kd.csv
+    raw_columns: ["heavy", "light", "Octet IgG KD b-Mouse Lysozyme-Fc Avid (M)", "neg_log_kd", "fitness"]
+    row_expansion: "one record per raw row"
+    antibody_fields:
+      heavy_chain: "raw column 'heavy' (VH)"
+      light_chain: "raw column 'light' (VL)"
+      antibody_type: IgG
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: Mouse_Lysozyme
+      antigen_name: "Mouse lysozyme"
+      antigen_sequence: "UniProt P08905 mature aa19-148 (130 aa)"   # source: official_database (verified exact match)
+      antigen_source: retrieved
+      construct_note: "experimental antigen is b-Mouse-Lysozyme-Fc; Fc fusion tag omitted from antigen_sequence"  # source: reasonable_implementation_choice
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better
+    rank_label_rule: "rank_label = fitness = neg_log_kd = -log10(K_D avidity [M])"      # source: deterministic_transformation
+    group_id_rule: "jain2024assessment/mouse_Ly_kd/Mouse_Lysozyme/neg_log10_kd_M/experimental"
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 2                            # source: raw (exact)
+    caveats:
+      - "AVIDITY (bivalent IgG) K_D, not monovalent affinity; keep separate from monovalent tables (do not pool)."  # source: paper/raw
+      - "only 2 records (2 distinct labels) -> minimally rankable group."  # source: raw

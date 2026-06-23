@@ -1,0 +1,35 @@
+study_id: zimmerman2020antibody
+paper: "cited DOI 10.1073/pnas.0603282103 (PNAS 2006, 4-4-20) — provenance year mismatch (see dossier)"
+antibody: "4-4-20 anti-fluorescein and affinity-maturation variants"
+label_kind: experimental          # source: raw
+
+tables:
+  - table_id: 4420_kd
+    raw_file: data/binding/zimmerman2020antibody_4420_kd.csv
+    raw_columns: ["heavy", "light", "KD (microM)", "KD (M)", "-log(KD M)", "fitness"]
+    row_expansion: "one record per raw row"          # source: repository_convention
+    antibody_fields:
+      heavy_chain: "raw column 'light' (VH, EVKL…)"   # source: raw + paper  [SWAP CORRECTION]
+      light_chain: "raw column 'heavy' (VL, DVVMTQ…)" # source: raw + paper  [SWAP CORRECTION]
+      antibody_type: scFv                             # source: repository_convention (matches adams 4-4-20); Fv also defensible
+      single_chain_sequence: null
+    antigen_fields:
+      antigen_key: Fluorescein
+      antigen_name: "Fluorescein (small molecule hapten; no protein sequence)"
+      antigen_sequence: null                          # source: paper (hapten, no sequence)
+      antigen_source: missing
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation + biology
+    rank_label_rule: "rank_label = fitness = -log10(K_D[M])"   # source: deterministic_transformation
+    group_id_rule: "zimmerman2020antibody/4420_kd/Fluorescein/neg_log10_kd_M/experimental"  # source: repository_convention
+    missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"  # source: repository_convention
+    keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+    drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+    expected_output_count: 21                          # source: raw (exact; corrects earlier 20)
+    required_corrections:
+      - "SWAP heavy/light: assign heavy_chain from raw 'light', light_chain from raw 'heavy'."  # source: raw+paper (verified)
+    caveats:
+      - "1 duplicate (heavy,light) pair (one repeated variant)."        # source: raw
+      - "assay_name 'SPR' is unverified; likely fluorescence-quenching titration."  # source: unresolved
+      - "study_id year (2020) does not match cited 2006 paper; exact source table unconfirmed."  # source: unresolved

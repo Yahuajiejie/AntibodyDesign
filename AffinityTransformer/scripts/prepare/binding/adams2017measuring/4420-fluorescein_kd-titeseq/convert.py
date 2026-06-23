@@ -39,7 +39,8 @@ METRIC_DIRECTION = "higher_is_better"
 TRANSFORM_RULE = "rank_label = -log10(fitness)  [fitness = raw Kd in M]"
 LABEL_KIND     = "experimental"
 GROUP_ID       = "adams2017measuring/4420-fluorescein_kd-titeseq/Fluorescein/neg_log10_kd_M/experimental"
-KD_COL         = "Kd (flow) [M]"
+# rank_label is computed from the raw "fitness" column (= K_D in M); the raw
+# "Kd (Tite-Seq) [M]" column is identical and not read.
 
 
 def _rl(raw) -> "float | None":
