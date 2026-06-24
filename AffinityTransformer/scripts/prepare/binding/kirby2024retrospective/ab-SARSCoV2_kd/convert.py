@@ -93,6 +93,9 @@ def convert(src: Path, out: Path) -> None:
         source_row = i + 2
         heavy = _seq(row.get("heavy"))
         light = _seq(row.get("light"))
+        # Raw header says "Kd [M]" but the values (3.3-2950, median 36) are
+        # nanomolar (Whitehead-lab yeast-display convention); _rl() converts
+        # nM -> M before -log10. The column header unit is a known mislabel.
         raw_v = row.get("Kd [M]")
         rl    = _rl(raw_v)
 

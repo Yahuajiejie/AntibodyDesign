@@ -38,6 +38,7 @@ def _build_entity_protocol_leakage_report(
     assigned: dict[str, pd.DataFrame],
     eligible: dict[str, pd.DataFrame],
     require_train_group: bool,
+    strict_known_counterpart: bool = True,
 ) -> pd.DataFrame:
     rows = [
         _overlap_report("record_id_overlap", assigned, "record_id"),
@@ -54,20 +55,21 @@ def _build_entity_protocol_leakage_report(
                 "antibody_cluster_overlap", assigned, "antibody_cluster_id"
             ),
         ])
-        for split_name, split_records in eligible.items():
-            rows.append(_coverage_report(
-                f"{split_name}_antigen_seen_in_train",
-                train,
-                split_records,
-                "antigen_sequence_key",
-            ))
-            if require_train_group:
+        if strict_known_counterpart:
+            for split_name, split_records in eligible.items():
                 rows.append(_coverage_report(
-                    f"{split_name}_group_seen_in_train",
+                    f"{split_name}_antigen_seen_in_train",
                     train,
                     split_records,
-                    "group_id",
+                    "antigen_sequence_key",
                 ))
+                if require_train_group:
+                    rows.append(_coverage_report(
+                        f"{split_name}_group_seen_in_train",
+                        train,
+                        split_records,
+                        "group_id",
+                    ))
     elif protocol == "antigen_cold_start":
         rows.extend([
             _overlap_report("antigen_sequence_overlap", assigned, "antigen_sequence_key"),
@@ -83,13 +85,14 @@ def _build_entity_protocol_leakage_report(
                 assigned,
                 "effective_antigen_input_hash",
             ))
-        for split_name, split_records in eligible.items():
-            rows.append(_coverage_report(
-                f"{split_name}_antibody_seen_in_train",
-                train,
-                split_records,
-                "antibody_cluster_id",
-            ))
+        if strict_known_counterpart:
+            for split_name, split_records in eligible.items():
+                rows.append(_coverage_report(
+                    f"{split_name}_antibody_seen_in_train",
+                    train,
+                    split_records,
+                    "antibody_cluster_id",
+                ))
     else:
         raise ValueError(f"unsupported entity cold-start protocol: {protocol!r}")
     return pd.DataFrame(rows, columns=LEAKAGE_COLUMNS)
@@ -212,13 +215,96 @@ def _build_unit_assignments(
 
 
 def _build_within_antigen_leakage_report(**splits: pd.DataFrame) -> pd.DataFrame:
-    # Deliberately ONLY record_id_overlap: group_id and antibody-identity
-    # crossing splits (via a DIFFERENT group) are both allowed by design
-    # under this protocol (see build_within_antigen_split's docstring).
-    return pd.DataFrame(
-        [_overlap_report("record_id_overlap", splits, "record_id")],
-        columns=LEAKAGE_COLUMNS,
-    )
+    """Leakage checks for antigen-context-local antibody holdout.
+
+    Antigen contexts themselves are expected to appear in train and holdout:
+    this is a known-antigen protocol.  What must not cross split boundaries is
+    the antibody unit/component *within the same antigen context*.  Optional
+    measurement-family and interaction checks are scoped the same way so
+    technical duplicates only constrain the antigen context they belong to.
+    """
+    scoped = {
+        split_name: split_records.assign(
+            _context_antibody_unit=_scoped_values(split_records, "_antibody_unit"),
+            _context_component_id=_scoped_values(
+                split_records, "_within_antigen_component_id"
+            ),
+        )
+        for split_name, split_records in splits.items()
+    }
+    rows = [
+        _overlap_report("record_id_overlap", scoped, "record_id"),
+        _overlap_report(
+            "within_antigen_antibody_unit_overlap",
+            scoped,
+            "_context_antibody_unit",
+        ),
+        _overlap_report(
+            "within_antigen_component_overlap",
+            scoped,
+            "_context_component_id",
+        ),
+        _coverage_report(
+            "valid_antigen_context_seen_in_train",
+            scoped["train"],
+            scoped["valid"],
+            "_antigen_context_id",
+        ),
+        _coverage_report(
+            "test_antigen_context_seen_in_train",
+            scoped["train"],
+            scoped["test"],
+            "_antigen_context_id",
+        ),
+    ]
+
+    for column in ("measurement_family_id", "interaction_key"):
+        if column not in scoped["train"].columns:
+            continue
+        scoped_with_column = {
+            split_name: split_records.assign(
+                **{f"_context_{column}": _scoped_optional_values(split_records, column)}
+            )
+            for split_name, split_records in scoped.items()
+        }
+        rows.append(_overlap_report_ignoring_missing(
+            f"within_antigen_{column}_overlap",
+            scoped_with_column,
+            f"_context_{column}",
+        ))
+
+    return pd.DataFrame(rows, columns=LEAKAGE_COLUMNS)
+
+
+def _scoped_values(records: pd.DataFrame, column: str) -> pd.Series:
+    return records["_antigen_context_id"].astype(str) + "\x1f" + records[column].astype(str)
+
+
+def _scoped_optional_values(records: pd.DataFrame, column: str) -> pd.Series:
+    values = records[column].astype("string").str.strip()
+    scoped = records["_antigen_context_id"].astype("string") + "\x1f" + values
+    return scoped.mask(values.isna() | values.eq(""))
+
+
+def _overlap_report_ignoring_missing(
+    check_name: str,
+    splits: dict[str, pd.DataFrame],
+    column: str,
+) -> dict[str, object]:
+    violations: list[str] = []
+    for left_name, right_name in combinations(splits, 2):
+        left = set(splits[left_name][column].dropna().astype(str))
+        right = set(splits[right_name][column].dropna().astype(str))
+        overlap = sorted(left & right)
+        if overlap:
+            violations.append(f"{left_name}/{right_name}: {overlap[:10]}")
+
+    return {
+        "check_name": check_name,
+        "status": "PASS" if not violations else "FAIL",
+        "n_violations": len(violations),
+        "details": "; ".join(violations),
+    }
 
 
 def _build_summary(strategy: str, **splits: pd.DataFrame) -> pd.DataFrame:

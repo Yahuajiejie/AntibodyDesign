@@ -1,7 +1,9 @@
 """Tests for the antigen cold-start protocol with separate entity annotations.
 
-Covers entity_cold_start_protocols.md section 5.4: unseen antigen, known
-antibody. Entity identity comes from a separate annotation table; the base
+By default this protocol is a global antigen-entity holdout: held-out antigen
+clusters are unseen, while the paired antibody may or may not have appeared in
+train. ``strict_known_counterpart=True`` narrows the evaluation to train-seen
+antibodies. Entity identity comes from a separate annotation table; the base
 records schema is never extended. Representation annotations (effective-input
 hashes) are optional.
 """
@@ -150,17 +152,26 @@ def test_entity_keys_disjoint_across_splits():
     )
 
 
-# 8. Main valid/test records contain only antibody clusters seen in train.
-def test_eval_antibodies_subset_of_train():
+# 8. Default valid/test keeps all held-out antigen records, including
+# antigen-unique antibody clusters.
+def test_default_keeps_unseen_antibody_counterparts():
     result = _split()
+    assert result.excluded_records.empty
+    assert any(
+        value.startswith("ab-cluster/unique-")
+        for value in _clusters(result.valid, "antibody_cluster_id")
+    )
+    checks = set(result.leakage_report["check_name"])
+    assert "valid_antibody_seen_in_train" not in checks
+
+
+# 9. Strict mode keeps only antibody clusters seen in train and records
+# dual-ish rows in excluded_records.
+def test_strict_eval_antibodies_subset_of_train():
+    result = _split(strict_known_counterpart=True)
     train_ab = _clusters(result.train, "antibody_cluster_id")
     assert _clusters(result.valid, "antibody_cluster_id") <= train_ab
     assert _clusters(result.test, "antibody_cluster_id") <= train_ab
-
-
-# 9. Dual-cold-start records retained in excluded_records with explicit reason.
-def test_dual_cold_records_excluded_with_reason():
-    result = _split()
     assert not result.excluded_records.empty
     assert set(result.excluded_records["protocol_exclusion_reason"]) == {
         "antibody_cluster_not_seen_in_train"

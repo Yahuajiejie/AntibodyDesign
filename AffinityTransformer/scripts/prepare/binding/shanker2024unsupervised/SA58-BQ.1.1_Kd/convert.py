@@ -50,6 +50,22 @@ def _rl(raw) -> "float | None":
         return None
 
 
+# Verified non-physical Kd sentinel placeholders (Phase 2 batch 2C contract):
+# SA58-BQ.1.1_Kd uses 0 and SA58-XBB.1.5_Kd uses 7.64e19 to mark "no measurable
+# binding". These are NOT real affinities and NOT assay limits. They are matched
+# exactly here -- do not generalize into a numeric threshold.
+_KD_SENTINELS = (0.0, 7.64e19)
+
+
+def _is_kd_sentinel(raw) -> bool:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return False
+    return any(v == s or math.isclose(v, s, rel_tol=1e-9, abs_tol=0.0)
+               for s in _KD_SENTINELS)
+
+
 def _write_outputs(records: list, out: Path, study_id: str, table_id: str,
                    source_file: str) -> None:
     df = pd.DataFrame(records)
@@ -91,12 +107,17 @@ def convert(src: Path, out: Path) -> None:
         heavy = _seq(row.get("heavy"))
         light = _seq(row.get("light"))
         raw_v = row.get("fitness")
-        rl    = _rl(raw_v)
+        # Sentinel policy: preserve the raw value + source row, but do NOT apply
+        # -log10; the record is kept (not deleted) and marked untrainable.
+        sentinel = _is_kd_sentinel(raw_v)
+        rl = None if sentinel else _rl(raw_v)
 
         drops = []
         if heavy is None:
             drops.append("missing_or_invalid_heavy_chain")
-        if rl is None:
+        if sentinel:
+            drops.append("nonphysical_kd_sentinel")
+        elif rl is None:
             drops.append("missing_rank_label")
 
         records.append({

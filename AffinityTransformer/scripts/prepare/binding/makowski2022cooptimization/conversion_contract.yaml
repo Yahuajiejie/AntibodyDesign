@@ -1,0 +1,52 @@
+study_id: makowski2022cooptimization
+paper: "Makowski et al., Nat Commun 13:3788, 2022 (DOI 10.1038/s41467-022-31457-3)"
+antibody: "emibetuzumab (anti-c-Met) CDR-variant panels (IgG)"
+label_kind: experimental          # source: raw (enrichment-based binding signal)
+common_rules:
+  row_expansion: "one record per raw row"            # source: repository_convention
+  antibody_fields: {heavy_chain: "raw 'heavy'", light_chain: "raw 'light'", antibody_type: IgG}  # source: raw
+  metric_name: rel_binding_signal
+  metric_unit: "relative signal (0-1)"               # source: raw (sort/deep-seq enrichment)
+  rank_label_rule: "rank_label = fitness (relative binding signal, used directly)"  # source: raw
+  group_id_rule: "makowski2022cooptimization/<table_id>/<antigen_key>/rel_binding_signal/experimental"  # source: repository_convention
+  missing_value_handling: "null light allowed; non-finite -> rank_label null"
+  keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+  drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+
+tables:
+  - table_id: igg_ant
+    raw_file: data/binding/makowski2022cooptimization_igg_ant.csv
+    antigen_key: MET
+    antigen: "UniProt P08581 SEMA region aa25-519 (c-Met, emibetuzumab target)"   # source: official_database (verified target)
+    metric_direction: higher_is_better                # source: deterministic_transformation (on-target: higher = stronger)
+    expected_output_count: 96                          # source: raw/validator (verified)
+  - table_id: iso_ant
+    raw_file: data/binding/makowksi2022cooptimization_iso_ant.csv   # NOTE: raw file is misspelled "makowksi" (converter matches)
+    antigen_key: MET
+    antigen: "UniProt P08581 SEMA region aa25-519"
+    metric_direction: higher_is_better
+    expected_output_count: 126                          # source: raw/validator (verified)
+  - table_id: igg_ova
+    raw_file: data/binding/makowski2022cooptimization_igg_ova.csv
+    antigen_key: Ovalbumin
+    antigen: "UniProt P01012 ovalbumin aa24-386 (off-target non-specificity reagent)"  # source: official_database
+    metric_direction: higher_is_better                # source: raw (signal magnitude). See OVA caveat.
+    expected_output_count: 96                          # source: raw/validator (verified)
+  - table_id: iso_ova
+    raw_file: data/binding/makowski2022cooptimization_iso_ova.csv
+    antigen_key: Ovalbumin
+    antigen: "UniProt P01012 ovalbumin aa24-386 (off-target)"
+    metric_direction: higher_is_better
+    expected_output_count: 126                          # source: raw/validator (verified)
+
+unresolved:
+  ova_direction:
+    issue: "*_ova tables measure OFF-TARGET binding; higher_is_better encodes signal magnitude, NOT antibody desirability (lower OVA = more specific)."
+    decision: "Preserve as-is (signal-magnitude ranking); do NOT interpret OVA rankings as antibody quality without inversion."
+    source: unresolved
+  iso_vs_igg:
+    issue: "'iso' and 'igg' are distinct CDR-variant panels; exact distinction unconfirmed. Does not affect label/unit/direction."
+    source: unresolved
+  iso_ant_filename:
+    issue: "iso_ant raw file is misspelled 'makowksi'; converter SOURCE_FILE matches, so it runs. Rename out of scope."
+    source: raw

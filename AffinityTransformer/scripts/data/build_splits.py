@@ -52,7 +52,7 @@ def main() -> None:
         default=5,
         help=(
             "within_antigen_split and strict entity cold-start protocols: "
-            "minimum protocol-eligible records required per evaluation group."
+            "minimum protocol-eligible records required per evaluation unit."
         ),
     )
     parser.add_argument(
@@ -153,12 +153,13 @@ def main() -> None:
         return
 
     if args.strategy in AUXILIARY_STRATEGIES:
-        # within_antigen_split: auxiliary "known-antigen, new-antibody"
-        # protocol (programming_spec_v1.0.md 3.2). group_id is allowed to
-        # repeat across train/valid/test here -- that's by design, not a
-        # leak. NOT a substitute for the main protocol; see
-        # WithinAntigenSplitResult's docstring before reporting results
-        # from this strategy as antigen-generalization evidence.
+        # within_antigen_split: "known-antigen, new-antibody" protocol
+        # (programming_spec_v1.0.md 3.2). It requires antigen context
+        # annotations (antigen_cluster_id preferred, antigen_sequence_key as
+        # exact-sequence fallback), then holds out antibody units inside each
+        # context. It is NOT a substitute for antigen-cluster holdout; see
+        # WithinAntigenSplitResult's docstring before reporting results from
+        # this strategy as antigen-generalization evidence.
         result = build_within_antigen_split(
             records,
             valid_fraction=args.valid_fraction,

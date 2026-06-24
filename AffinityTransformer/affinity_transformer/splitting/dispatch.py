@@ -14,10 +14,11 @@ VALID_STRATEGIES = {"debug_record_split", "group_holdout_split", "antigen_cluste
 
 # `within_antigen_split` is intentionally NOT in VALID_STRATEGIES / build_splits.
 # It answers a different question (programming_spec_v1.0.md section 3.2:
-# "known-antigen, new-antibody") and deliberately allows the same group_id
-# to appear in more than one split -- mixing it into build_splits's dispatch
-# would make it too easy to point a real training config at it by mistake
-# and report the result as unseen-antigen generalization, which it is not.
+# "known-antigen, new-antibody").  It pools records by antigen context and then
+# holds out antibody candidates inside each context; mixing it into
+# build_splits's dispatch would make it too easy to point a real training config
+# at it by mistake and report the result as unseen-antigen generalization, which
+# it is not.
 
 
 AUXILIARY_STRATEGIES = {"within_antigen_split"}

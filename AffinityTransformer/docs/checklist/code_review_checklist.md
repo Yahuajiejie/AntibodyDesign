@@ -155,6 +155,50 @@ rg -n "config\.[a-zA-Z0-9_.]+" affinity_transformer train.py predict.py
 | Antigen cluster holdout | 否 | 是 | 否 | 新抗原、可已见抗体 |
 | Dual cold-start | 否 | 否 | 否 | 新抗原与新抗体 |
 
+当前如果审查目标是“四种协议从数据处理到 split 导出”，本轮只看：
+
+| 本轮协议 | 主要入口 | 必须隔离/检查 | 备注 |
+| --- | --- | --- | --- |
+| Group holdout | `scripts/data/build_splits.py --strategy group_holdout_split` | `record_id`、`group_id` 不跨 split | 用作数据与导出管道 smoke test，不代表实体 cold-start |
+| Antibody cold-start | `scripts/data/build_antibody_cold_start_split.py` | `record_id`、`measurement_family_id`、`interaction_key`、`antibody_sequence_key`、`antibody_cluster_id` 不跨 split | 不强制要求 `antigen_cluster_id` 或 effective-input audit |
+| Antigen cold-start | `scripts/data/build_antigen_cold_start_split.py` | `record_id`、`measurement_family_id`、`interaction_key`、`antigen_sequence_key`、`antigen_cluster_id` 不跨 split；valid/test 抗体簇必须在 train 出现 | representation annotation 存在时必须审 effective-input overlap |
+| Dual cold-start | `scripts/data/build_dual_cold_start_split.py` | 抗体、抗原、measurement family、interaction、group、record 全部不跨 split | 先看 `component_summary.csv`，防止超大 component 使协议不可行 |
+
+本轮暂不审 pair holdout；within-antigen 和 antigen-cluster holdout 只作为历史/辅助路径检查，不作为四协议导出目标。
+
+### 8.1 四协议 split 导出流水线
+
+目标不是训练，而是确认下面这条链能在真实数据上重复运行：
+
+```text
+all_records.parquet
+→ entity_annotations.parquet
+→ 可选 representation_annotations.parquet
+→ group / antibody / antigen / dual 四个 split 目录
+→ train.parquet / valid.parquet / test.parquet / audit artifacts
+```
+
+- [ ] `all_records.parquet` 是否能由 `scripts/prepare/binding/merge_records.py` 稳定重建？
+- [ ] `record_id` 是否唯一、稳定，且不会因为 DataFrame 行号变化而变化？
+- [ ] `group_id`、`rank_label`、`keep_for_training` 是否足够支撑四种协议的过滤和评估？
+- [ ] `entity_annotations.parquet` 是否是窄表，而不是把所有审计字段塞回 base records？
+- [ ] annotation 是否覆盖所有输入 records，且 `record_id` 无缺失、无重复？
+- [ ] `antibody_sequence_key → antibody_cluster_id` 是否一对一映射到唯一 cluster？
+- [ ] `antigen_sequence_key → antigen_cluster_id` 是否一对一映射到唯一 cluster？
+- [ ] `interaction_key` 是否由实体键稳定派生，而不是依赖手填名称？
+- [ ] `measurement_family_id` 是否不会过粗到把大量无关 records 串成一个 component？
+- [ ] 专用 cold-start 脚本是否是 canonical 导出入口，旧 `build_splits.py` 的兼容分支是否不会被误当成正式 artifact 入口？
+- [ ] 四个协议目录是否全部写出 `train.parquet`、`valid.parquet` 和 `test.parquet`？
+- [ ] entity cold-start 协议目录是否写出 `split_manifest.yaml`、`component_assignments.parquet`、`eligibility_report.csv`、`excluded_records.parquet`、`leakage_report.csv` 和 `summary.csv`？
+- [ ] dual 协议是否额外写出 `component_summary.csv`？
+- [ ] 写出的 train/valid/test parquet 是否默认剥离 entity annotation 字段，保持 base records schema？
+- [ ] 每个 `leakage_report.csv` 是否全部 PASS；若 FAIL，是否中止而不是继续进入训练？
+- [ ] 每个 `excluded_records.parquet` 是否带有可解释的 `protocol_exclusion_reason`？
+- [ ] 每个协议的 valid/test 是否非空，且有足够可计算 Spearman 的 group？
+- [ ] 如果提供 `representation_annotations.parquet`，manifest 是否记录 `effective_input_audited: true`？
+- [ ] 如果未提供 representation annotation，manifest 是否明确记录未做 effective-input audit？
+- [ ] dual 的最大 component 占比是否被记录；如果过大，是否回查 cluster / measurement family / interaction 定义，而不是直接改 split 算法？
+
 - [ ] 除明确的 Pair holdout 外，是否先切 records 再在 split 内构造 pairs？
 - [ ] split unit 是 `group_id`、antigen cluster、antibody cluster 还是 connected component？
 - [ ] Within-antigen 是否在全局范围隔离抗体簇，而不只在当前 group 内？
@@ -306,6 +350,22 @@ rg -n "requires_grad|optimizer|\.train\(|\.eval\(" affinity_transformer
 | 历史结果 | 哪些运行需要重命名、降级或重跑 |
 
 ## 19. 建议的审查顺序
+
+如果当前任务是“四种协议 split 导出”，先按下面这个短顺序审，不要先跳到训练、checkpoint 或模型：
+
+1. 从 `scripts/prepare/binding/merge_records.py` 确认 `all_records.parquet` 如何生成。
+2. 审 `record_id`、`group_id`、`rank_label`、`keep_for_training` 的稳定性和可用性。
+3. 审 `affinity_transformer/annotations/`：annotation 窄表、覆盖率、唯一性、临时 join 和 base schema 隔离。
+4. 审 cluster / entity key 的生成假设：`antibody_sequence_key`、`antibody_cluster_id`、`antigen_sequence_key`、`antigen_cluster_id`、`measurement_family_id`、`interaction_key`。
+5. 先跑/审 group holdout，确认基础导出管道没坏。
+6. 再审 antibody cold-start 专用脚本和产物。
+7. 再审 antigen cold-start 专用脚本和产物。
+8. 最后审 dual cold-start，重点看 component 可切性和 `component_summary.csv`。
+9. 汇总四个协议目录的 train/valid/test 行数、leakage 状态、excluded 原因和 manifest。
+
+只有这条链稳定后，再回到训练相关审查。
+
+长期全系统审查仍可使用下面的完整顺序：
 
 1. 读 README 的问题定义和评估协议。
 2. 用 `rg --files` 重建当前目录地图。

@@ -25,6 +25,7 @@ from .audits import (
     _build_entity_protocol_leakage_report,
     _build_summary,
     _build_unit_assignments,
+    build_group_eligibility,
 )
 from .results import EntityColdStartFold, EntityColdStartSplitResult
 
@@ -63,16 +64,16 @@ def build_antibody_cold_start_split(
     seed: int,
     min_eval_records: int = 2,
     require_train_group: bool = True,
+    strict_known_counterpart: bool = False,
 ) -> EntityColdStartSplitResult:
-    """Split globally by antibody components for known-antigen evaluation.
+    """Split globally by antibody components for entity holdout evaluation.
 
-    Answers entity_cold_start_protocols.md section 5.3: given antigens already
-    seen during training, can the model rank antibody clusters that never
-    appeared in training? Antibody clusters and measurement families are
-    indivisible across the whole table. Validation/test records are retained
-    only when their exact antigen (and, by default, their experimental group)
-    occurs in train. Records excluded from the primary protocol remain
-    auditable in ``excluded_records``.
+    By default, this answers a global antibody-entity holdout question: can the
+    model handle antibody clusters that never appeared in training, regardless
+    of whether the paired antigen also appeared in training? When
+    ``strict_known_counterpart=True``, it switches to the narrower controlled
+    question: unseen antibodies on train-seen antigens (and, when
+    ``require_train_group=True``, train-seen groups).
 
     Args:
         records: Base processed records. Entity identity columns are NOT
@@ -85,8 +86,10 @@ def build_antibody_cold_start_split(
         test_fraction: Fraction of records (by component weight) for test.
         seed: Deterministic assignment seed.
         min_eval_records: Minimum protocol-eligible records per evaluation group.
-        require_train_group: When True, valid/test records must belong to a
-            ``group_id`` already present in train.
+        require_train_group: In strict mode, require valid/test records to
+            belong to a ``group_id`` already present in train.
+        strict_known_counterpart: When True, apply the narrower known-antigen
+            eligibility filter. Defaults to False.
     """
     prepared = _resolve_cold_start_inputs(
         records, entity_annotations, protocol="antibody_cold_start"
@@ -99,6 +102,7 @@ def build_antibody_cold_start_split(
         seed=seed,
         min_eval_records=min_eval_records,
         require_train_group=require_train_group,
+        strict_known_counterpart=strict_known_counterpart,
     )
 
 
@@ -147,16 +151,15 @@ def build_antigen_cold_start_split(
     seed: int,
     min_eval_records: int = 2,
     representation_annotations: pd.DataFrame | None = None,
+    strict_known_counterpart: bool = False,
 ) -> EntityColdStartSplitResult:
-    """Split by antigen components, evaluating only train-seen antibodies.
+    """Split by antigen components for entity holdout evaluation.
 
-    Answers entity_cold_start_protocols.md section 5.4: given an antigen cluster
-    never present in training, can the model rank antibody clusters already seen
-    on other training antigens? Antigen clusters and measurement families are
-    indivisible across the whole table. Validation/test records are kept only
-    when their ``antibody_cluster_id`` occurs in train; held-out records whose
-    antibody cluster is also unseen are the Dual cold-start subset and remain
-    auditable in ``excluded_records``.
+    By default, this answers a global antigen-entity holdout question: can the
+    model handle antigen clusters that never appeared in training, regardless
+    of whether the paired antibody also appeared in training? When
+    ``strict_known_counterpart=True``, it switches to the narrower controlled
+    question: unseen antigens with train-seen antibody clusters.
 
     Args:
         records: Base processed records. Entity identity columns are NOT
@@ -172,6 +175,8 @@ def build_antigen_cold_start_split(
             ``annotations.load_representation_annotations``). When provided, the
             antigen effective-input hash is materialized and checked for
             cross-split overlap; when absent, effective-input is not audited.
+        strict_known_counterpart: When True, apply the narrower train-seen
+            antibody eligibility filter. Defaults to False.
     """
     prepared = _resolve_cold_start_inputs(
         records,
@@ -187,6 +192,7 @@ def build_antigen_cold_start_split(
         seed=seed,
         min_eval_records=min_eval_records,
         require_train_group=False,
+        strict_known_counterpart=strict_known_counterpart,
     )
 
 
@@ -197,6 +203,7 @@ def build_antibody_cold_start_kfolds(
     *,
     min_eval_records: int = 2,
     require_train_group: bool = True,
+    strict_known_counterpart: bool = False,
 ) -> list[EntityColdStartFold]:
     """Build antibody-component-isolated development folds."""
     return _build_entity_cold_start_kfolds(
@@ -206,6 +213,7 @@ def build_antibody_cold_start_kfolds(
         seed=seed,
         min_eval_records=min_eval_records,
         require_train_group=require_train_group,
+        strict_known_counterpart=strict_known_counterpart,
     )
 
 
@@ -215,6 +223,7 @@ def build_antigen_cold_start_kfolds(
     seed: int,
     *,
     min_eval_records: int = 2,
+    strict_known_counterpart: bool = False,
 ) -> list[EntityColdStartFold]:
     """Build antigen-component-isolated development folds."""
     return _build_entity_cold_start_kfolds(
@@ -224,6 +233,7 @@ def build_antigen_cold_start_kfolds(
         seed=seed,
         min_eval_records=min_eval_records,
         require_train_group=False,
+        strict_known_counterpart=strict_known_counterpart,
     )
 
 
@@ -236,6 +246,7 @@ def _build_entity_cold_start_split(
     seed: int,
     min_eval_records: int,
     require_train_group: bool,
+    strict_known_counterpart: bool,
 ) -> EntityColdStartSplitResult:
     _validate_fraction_and_eval_size(valid_fraction, test_fraction, min_eval_records)
     working, pre_split_excluded = _prepare_cold_start_records(records, protocol)
@@ -255,21 +266,23 @@ def _build_entity_cold_start_split(
     raw_valid = assigned.loc[assigned["_assigned_split"] == "valid"].copy()
     raw_test = assigned.loc[assigned["_assigned_split"] == "test"].copy()
 
-    valid, valid_report, valid_excluded = _select_protocol_eligible_records(
+    valid, valid_report, valid_excluded = _select_entity_holdout_records(
         raw_train,
         raw_valid,
         protocol=protocol,
         split_name="valid",
         min_eval_records=min_eval_records,
         require_train_group=require_train_group,
+        strict_known_counterpart=strict_known_counterpart,
     )
-    test, test_report, test_excluded = _select_protocol_eligible_records(
+    test, test_report, test_excluded = _select_entity_holdout_records(
         raw_train,
         raw_test,
         protocol=protocol,
         split_name="test",
         min_eval_records=min_eval_records,
         require_train_group=require_train_group,
+        strict_known_counterpart=strict_known_counterpart,
     )
     if valid.empty or test.empty:
         raise ValueError(
@@ -282,6 +295,7 @@ def _build_entity_cold_start_split(
         assigned={"train": raw_train, "valid": raw_valid, "test": raw_test},
         eligible={"valid": valid, "test": test},
         require_train_group=require_train_group,
+        strict_known_counterpart=strict_known_counterpart,
     )
     failed = leakage_report.loc[leakage_report["status"] != "PASS"]
     if not failed.empty:
@@ -325,6 +339,7 @@ def _build_entity_cold_start_kfolds(
     seed: int,
     min_eval_records: int,
     require_train_group: bool,
+    strict_known_counterpart: bool,
 ) -> list[EntityColdStartFold]:
     if n_splits < 2:
         raise ValueError("n_splits must be at least 2")
@@ -360,13 +375,14 @@ def _build_entity_cold_start_kfolds(
         ].copy()
         raw_train["_assigned_split"] = "train"
         raw_valid["_assigned_split"] = "valid"
-        valid, eligibility, fold_excluded = _select_protocol_eligible_records(
+        valid, eligibility, fold_excluded = _select_entity_holdout_records(
             raw_train,
             raw_valid,
             protocol=protocol,
             split_name="valid",
             min_eval_records=min_eval_records,
             require_train_group=require_train_group,
+            strict_known_counterpart=strict_known_counterpart,
         )
         if valid.empty:
             raise ValueError(
@@ -377,6 +393,7 @@ def _build_entity_cold_start_kfolds(
             assigned={"train": raw_train, "valid": raw_valid},
             eligible={"valid": valid},
             require_train_group=require_train_group,
+            strict_known_counterpart=strict_known_counterpart,
         )
         failed = leakage_report.loc[leakage_report["status"] != "PASS"]
         if not failed.empty:
@@ -541,6 +558,35 @@ def _derive_entity_components(records: pd.DataFrame, protocol: str) -> pd.Series
         [root_to_component[find(position)] for position in range(n_records)],
         index=records.index,
         dtype="object",
+    )
+
+
+def _select_entity_holdout_records(
+    train: pd.DataFrame,
+    holdout: pd.DataFrame,
+    *,
+    protocol: str,
+    split_name: str,
+    min_eval_records: int,
+    require_train_group: bool,
+    strict_known_counterpart: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if strict_known_counterpart:
+        return _select_protocol_eligible_records(
+            train,
+            holdout,
+            protocol=protocol,
+            split_name=split_name,
+            min_eval_records=min_eval_records,
+            require_train_group=require_train_group,
+        )
+    _protocol_entity_column(protocol)  # validates the protocol name
+    return build_group_eligibility(
+        holdout,
+        split_name=split_name,
+        min_eval_records=min_eval_records,
+        input_column="antibody_sequence_key",
+        label_column="rank_label",
     )
 
 

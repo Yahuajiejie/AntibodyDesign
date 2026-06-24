@@ -100,22 +100,22 @@ Pair holdout 允许训练集和验证集共享抗原、抗体和 record，只要
 
 ### 3.2 Within-antigen antibody holdout
 
-科学协议允许抗原和 group 跨集合，但要求验证抗体在训练中保持未见。目标约束包括：
+科学协议允许抗原 context 和 group 跨集合，但要求同一 antigen context 内的验证抗体在训练中保持未见。目标约束包括：
 
 - `record_id` 不重叠；
-- `measurement_family_id` 不重叠；
-- `interaction_key` 不重叠；
-- `antibody_sequence_key` 不重叠；
-- `antibody_cluster_id` 不重叠；
-- 抗体簇隔离应在整个数据集范围内成立，不只在单个 group 内成立。
+- 同一 antigen context 内 `measurement_family_id` 不重叠；
+- 同一 antigen context 内 `interaction_key` 不重叠；
+- 同一 antigen context 内 `antibody_sequence_key` 不重叠；
+- 同一 antigen context 内 `antibody_cluster_id` 不重叠；
+- 抗原 context 应优先由 `antigen_cluster_id` 定义，其次由 `antigen_sequence_key` 定义，不能直接用 `group_id` 代替。
 
-当前 `build_within_antigen_split` 的实现比上述协议宽松。它在每个 `group_id` 内独立按精确抗体序列哈希切分，并保证同一 group 内的同一精确抗体不跨 train、valid、test；同一抗体仍可通过另一个 group 出现在不同集合。它没有抗体聚类，也没有 `measurement_family_id` 和 `interaction_key` 审计。
+当前 `build_within_antigen_split` 先按 antigen context 聚合 records，再在每个 context 内按抗体单位/component 切分。抗原 context 优先使用 `antigen_cluster_id`，缺失时使用 `antigen_sequence_key`；不再把 `group_id` 或旧 `antigen_key` 当作正式 context。抗体单位优先使用 `antibody_cluster_id`，其次 `antibody_sequence_key`，最后才退回精确抗体序列哈希。
 
-该函数会把无法稳定切分的小 group 全部放入 train，并输出 `pinned_groups.csv`。`min_eval_records` 控制一个 group 至少要给 valid 和 test 各贡献多少条记录。
+该函数会把无法稳定切分的小 antigen context 全部放入 train，并输出兼容旧 artifact 名称的 `pinned_groups.csv`。其中 `group_id` 列记录该 context 涉及的 group ids；`min_eval_records` 控制一个 antigen context 至少要给 valid 和 test 各贡献多少条记录。
 
-因此，当前实现应称为“group-local exact-antibody holdout”，不能直接当作 README 定义的完整 within-antigen antibody holdout。
+当前实现已不再是 group-local exact-antibody holdout。剩余风险主要在 antigen cluster 本身的生成质量，以及 `pinned_groups.csv` 的命名仍是历史兼容名称。
 
-状态：部分接入。
+状态：主体接入；cluster 质量与 artifact 命名仍需审计。
 
 ### 3.3 Dual cold-start
 
@@ -138,7 +138,7 @@ Pair holdout 允许训练集和验证集共享抗原、抗体和 record，只要
 | --- | --- | --- |
 | `debug_record_split` | 随机切分 records，record 不重叠 | 流程调试 |
 | `group_holdout_split` | 同一 `group_id` 整体进入一个集合 | 未见 group |
-| `build_within_antigen_split` | 每个 group 内按精确抗体哈希切分 | group-local 新抗体 |
+| `build_within_antigen_split` | 每个 antigen context 内按抗体单位/component 切分 | 已知抗原 context 上的新抗体 |
 | `antigen_cluster_holdout_split` | 按抗原序列簇切分 | 未见抗原簇 |
 | `build_group_kfolds` | 按 `group_id` 做 K 折 | group-level 交叉验证 |
 
@@ -190,7 +190,7 @@ Pair holdout 允许训练集和验证集共享抗原、抗体和 record，只要
 
 - `debug_record_split`：检查 `record_id`；
 - `group_holdout_split`：检查 `record_id` 和 `group_id`；
-- `build_within_antigen_split`：报告中只检查 `record_id`，同 group 内精确抗体隔离由构造过程保证但未独立审计；
+- `build_within_antigen_split`：检查 `record_id`、同 antigen context 内的抗体单位/component overlap、同 context 内的 `measurement_family_id` 和 `interaction_key` overlap，并检查 valid/test 的 antigen context 在 train 出现；
 - `antigen_cluster_holdout_split`：检查 `record_id`、`group_id` 和 `antigen_cluster_id`。
 
 这套审计还不足以满足新版 README 的完整协议。
@@ -497,7 +497,7 @@ pytest -q
 4. 不把 `debug_record_split` 称为 pair holdout。
 5. 不把 group holdout 称为未见抗原评估。
 6. 不把 antigen-cluster holdout 称为 dual cold-start，除非抗体簇等约束也已满足。
-7. 不把当前 group-local 的 within-antigen 实现解释为全局新抗体簇泛化。
+7. 不把 within-antigen 结果解释为未见抗原泛化；它回答的是已知 antigen context 内的新抗体排序。
 8. 不把未接入 runner 的 pointwise、listwise、MSA 或 AbLang-2 写成已支持能力。
 9. 不把二分类和连续标签混成一个无法解释的指标。
 10. 不在 import 时加载预训练模型或大数据。
@@ -509,7 +509,7 @@ pytest -q
 | 优先级 | 问题 | 验收目标 |
 | --- | --- | --- |
 | P0 | 主协议缺少抗体聚类、测量家族和 interaction 实体 | 完成实体键，输出真正的 dual cold-start split 和全量审计 |
-| P0 | within-antigen 实现只做 group-local 精确序列隔离 | 改为全局 antibody cluster 隔离，或永久使用更准确的协议名称 |
+| P0 | within-antigen 依赖 antigen context/cluster 质量，且 `pinned_groups.csv` 名称仍有历史包袱 | 审计 antigen context 生成质量，并在 artifact 兼容窗口后改成更准确的 context eligibility 命名 |
 | P0 | 新切分策略未接入训练配置和 K 折 | 配置、CLI、自动切分、K 折和产物使用同一协议定义 |
 | P0 | 缓存模型没有新样本推理入口 | 打通在线生成 embedding 到 `EmbeddingAffinityRanker` 的推理流程 |
 | P1 | 抗原聚类默认值不一致且缺元数据 | 统一默认行为并写出完整 `cluster_metadata.yaml` |

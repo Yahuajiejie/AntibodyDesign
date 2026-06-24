@@ -1,0 +1,52 @@
+study_id: shanehsazzadeh2023unlocking
+paper: "Shanehsazzadeh et al., bioRxiv 2023.01.08.523187 (2024); AbSci"
+antibody: "trastuzumab + AI-designed variants"
+antigen_common:
+  antigen_key: hHER2
+  antigen_name: "Human HER2 / ERBB2"
+  antigen_sequence: "UniProt P04626 extracellular domain aa23-645 (domains I-IV)"  # source: official_database (target verified)
+  antigen_source: retrieved
+label_kind: experimental          # source: raw
+
+tables:
+  - table_id: kd_hher2_fab
+    raw_columns: ["heavy", "light", "Fab KD (nM) (hHER2)", "-log(KD (M) )", "fitness"]
+    antibody_type: Fab                                # source: raw (Fab format)
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better
+    rank_label_rule: "rank_label = fitness; fitness is pre-computed -log10(K_D[M])"  # source: raw (pre-computed column)
+    group_id_rule: "shanehsazzadeh2023unlocking/kd_hher2_fab/hHER2/neg_log10_kd_M/experimental"
+    expected_output_count: 13                         # source: raw/validator (verified; matches README)
+  - table_id: kd_hher2_mab
+    raw_columns: ["heavy", "light", "...KD...", "-log(KD (M))", "fitness"]
+    antibody_type: IgG                                # source: raw (mAb format)
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better
+    rank_label_rule: "rank_label = fitness = pre-computed -log10(K_D[M])"
+    group_id_rule: "shanehsazzadeh2023unlocking/kd_hher2_mab/hHER2/neg_log10_kd_M/experimental"
+    expected_output_count: 13                         # source: raw/validator (verified)
+  - table_id: zerokd_trastuzumab
+    raw_columns: ["heavy", "light", "KD (nM)", "-log(KD (M))", "fitness"]
+    antibody_type: IgG
+    metric_name: neg_log10_kd_M
+    metric_unit: "-log10(KD/M)"
+    metric_direction: higher_is_better
+    rank_label_rule: "rank_label = fitness = pre-computed -log10(K_D[M])"
+    group_id_rule: "shanehsazzadeh2023unlocking/zerokd_trastuzumab/hHER2/neg_log10_kd_M/experimental"
+    expected_output_count: 422                        # source: raw/validator (verified; matches README)
+  - table_id: adcc_ec50
+    raw_columns: ["heavy", "light", "ADCC EC50 (pM)", "fitness"]
+    antibody_type: IgG
+    metric_name: neg_log10_ec50_M
+    metric_unit: "-log10(EC50/M)"
+    metric_direction: higher_is_better                # source: deterministic_transformation (lower EC50 = more potent)
+    rank_label_rule: "rank_label = -log10(fitness * 1e-12); fitness = EC50 in pM"  # source: raw (pM) + deterministic_transformation
+    group_id_rule: "shanehsazzadeh2023unlocking/adcc_ec50/hHER2/neg_log10_ec50_M/experimental"
+    expected_output_count: 13                         # source: raw/validator (verified; matches README)
+    caveats:
+      - "assay_type currently 'binding'; ADCC EC50 is a functional cytotoxicity potency, not affinity (metadata only)."  # source: unresolved
+
+common_missing_value_handling: "null light allowed; non-finite -log10 -> rank_label null"  # source: repository_convention
+common_keep_drop: "keep true unless heavy missing/invalid OR rank_label non-finite; drop_reason missing_or_invalid_heavy_chain | missing_rank_label"

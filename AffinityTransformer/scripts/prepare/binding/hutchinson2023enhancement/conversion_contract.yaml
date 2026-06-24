@@ -1,0 +1,39 @@
+study_id: hutchinson2023enhancement
+paper: "Hutchinson et al., mAbs 16(1) 2024 (DOI 10.1080/19420862.2024.2362775)"
+antibody: "D44.1 (anti-HEL) + ~200 DeepAb/DMS-designed variants; IgG on NIP228 framework"
+label_kind: experimental          # source: paper
+antigen_common:
+  antigen_key: HEL
+  antigen_name: "Hen egg lysozyme"
+  antigen_sequence: "UniProt P00698 mature aa19-147 (129 aa)"   # source: official_database (verified; same as jain/warszawski)
+  antigen_source: retrieved
+
+common_rules:
+  row_expansion: "one record per raw row (WT D44.1 + designed variants)"  # source: repository_convention
+  antibody_fields: {heavy_chain: "raw 'heavy' (VH)", light_chain: "raw 'light' (VL)"}  # source: raw
+  metric_name: neg_log10_kd_M
+  metric_unit: "-log10(KD/M)"                         # source: raw (fitness == '-log10(KD (M))' column; M-based, NOT nM)
+  metric_direction: higher_is_better                 # source: deterministic_transformation + biology
+  rank_label_rule: "rank_label = fitness; fitness is pre-computed -log10(K_D[M]) (used directly, NOT re-transformed)"  # source: raw (pre-computed column)
+  group_id_rule: "hutchinson2023enhancement/<table_id>/HEL/neg_log10_kd_M/experimental"  # source: repository_convention
+  missing_value_handling: "null light allowed; non-finite fitness -> rank_label null"
+  keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+  drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+
+tables:
+  # Fab tables: monovalent Fab affinity
+  - {table_id: multikd_fab,   antibody_type: Fab, assay: "Fab binding kinetics (affinity)",          expected_output_count: 15}
+  - {table_id: singlekd_fab,  antibody_type: Fab, assay: "Fab binding kinetics (affinity)",          expected_output_count: 22}
+  - {table_id: top200kd_fab,  antibody_type: Fab, assay: "Fab binding kinetics (affinity)",          expected_output_count: 50}   # 2 duplicate (h,l)
+  - {table_id: top27kd_fab,   antibody_type: Fab, assay: "Fab binding kinetics (affinity)",          expected_output_count: 28}   # 1 duplicate (h,l)
+  # IgG tables: single-point APPARENT affinity (avidity-influenced; NIP228 IgG framework)
+  - {table_id: multikd_igg,   antibody_type: IgG, assay: "IgG binding kinetics (apparent affinity)", expected_output_count: 15}
+  - {table_id: singlekd_igg,  antibody_type: IgG, assay: "IgG binding kinetics (apparent affinity)", expected_output_count: 23}
+  - {table_id: top200kd_igg,  antibody_type: IgG, assay: "IgG binding kinetics (apparent affinity)", expected_output_count: 182}
+  - {table_id: top27kd_igg,   antibody_type: IgG, assay: "IgG binding kinetics (apparent affinity)", expected_output_count: 27}   # 1 duplicate (h,l)
+
+caveats:
+  - "IgG values are single-point APPARENT (avidity-influenced) affinities; keep Fab and IgG tables in separate groups, do not pool."  # source: paper
+  - "Tables are overlapping design subsets (top27 subset of top200; WT in all 8); cross-table + within-table (heavy,light) duplicates -> annotation-stage measurement-family handling."  # source: raw
+  - "README column label '-log(Kd[nM])' is misleading; actual metric is -log10(K_D[M]). Converter is correct (M-based)."  # source: raw vs README
+  - "NIP228 is the IgG expression framework/control, NOT the antigen (antigen is HEL)."  # source: paper

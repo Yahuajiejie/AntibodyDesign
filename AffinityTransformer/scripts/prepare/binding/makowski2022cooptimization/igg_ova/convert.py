@@ -36,8 +36,12 @@ ASSAY_NAME     = "ELISA"
 ASSAY_TYPE     = "binding"
 METRIC_NAME    = "rel_binding_signal"
 METRIC_UNIT    = "relative signal (0–1)"
+# OFF-TARGET caveat (Phase 2 batch 2A): OVA is a non-specificity reagent.
+# 'higher_is_better' faithfully encodes binding-SIGNAL magnitude (higher = more
+# OVA binding). It is NOT antibody desirability -- lower OVA = more specific.
+# Output is kept faithful to the measured property; the labels are NOT inverted.
 METRIC_DIRECTION = "higher_is_better"
-TRANSFORM_RULE = "rank_label = fitness (relative binding signal, already higher=better)"
+TRANSFORM_RULE = "rank_label = fitness (relative OVA off-target binding signal; higher = more binding)"
 LABEL_KIND     = "experimental"
 GROUP_ID       = "makowski2022cooptimization/igg_ova/Ovalbumin/rel_binding_signal/experimental"
 FITNESS_COL    = "fitness"

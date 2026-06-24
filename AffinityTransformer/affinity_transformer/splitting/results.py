@@ -24,31 +24,22 @@ class SplitResult:
 
 @dataclass
 class WithinAntigenSplitResult:
-    """Output of `build_within_antigen_split` (programming_spec_v1.0.md 3.2,
-    "known-antigen, new-antibody").
+    """Output of `build_within_antigen_split`.
 
-    Unlike `SplitResult` from `group_holdout_split`, the same `group_id` (and
-    the same antibody-sequence identity, as long as it's via a *different*
-    group) may legitimately appear in more than one split here -- that is
-    the point of this auxiliary protocol. What this guarantees, per group,
-    is the only thing that actually matters for `dataset.pairs.build_pairs`
-    (which only ever constructs pairs *within* one group_id): no
-    `record_id` crosses a split, and within any single group, an antibody
-    assigned to train never also shows up in that same group's valid/test
-    rows. Whether that exact antibody sequence also appears in some other,
-    unrelated group's training data is allowed and is not leakage -- the
-    relationship actually being predicted (this antibody vs THIS antigen's
-    other candidates) was never trained on regardless.
+    This is the known-antigen/new-antibody protocol: records are first pooled
+    by antigen context (`antigen_cluster_id`, falling back to
+    `antigen_sequence_key`), then antibody candidates are held out inside each
+    context.  The same `group_id` may appear in multiple splits because a
+    single antigen context can contain multiple assay groups and must remain
+    present in train/valid/test.  The same antibody unit/component must not
+    cross split boundaries within the same antigen context.
 
-    `pinned_groups` lists every group that was too small to split reliably
-    (fewer than 3 distinct antibody-sequence units, or splitting would leave
-    fewer than `min_eval_records` records in valid or test) -- these are
-    routed entirely to train rather than forced into an unstable 1-2-point
-    split (spec section 3.4).
+    `pinned_groups` is retained for artifact compatibility, but rows now
+    describe antigen contexts that were too small to split reliably; the
+    `group_id` column contains the context's contributing group ids.
 
-    Always report results from this split as "within-antigen
-    generalization", never as evidence of generalization to unseen
-    antigens.
+    Report this split as within-antigen antibody generalization, never as
+    evidence of unseen-antigen generalization.
     """
 
     train: pd.DataFrame

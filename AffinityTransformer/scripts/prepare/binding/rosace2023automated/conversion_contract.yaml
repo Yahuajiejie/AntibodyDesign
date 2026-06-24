@@ -1,0 +1,26 @@
+study_id: rosace2023automated
+paper: "Rosace et al., Nat Commun 14, 2023 (DOI 10.1038/s41467-023-37668-6)"
+antibody: "adalimumab / golimumab (anti-TNF-alpha) + engineered variants"
+antigen_common:
+  antigen_key: TNFa
+  antigen_name: "Tumor necrosis factor alpha (TNF-alpha)"
+  antigen_source: retrieved                          # source: official_database (target verified: adalimumab/golimumab are anti-TNF)
+label_kind: experimental          # source: raw
+common_rules:
+  row_expansion: "one record per raw row"            # source: repository_convention
+  antibody_fields: {heavy_chain: "raw 'heavy'", light_chain: "raw 'light'", antibody_type: Fv}  # source: raw
+  metric_name: neg_log10_kd_nM
+  metric_unit: "-log10(KD/nM)"                        # source: raw (fitness == '-log(Kd [nM])' column)
+  metric_direction: higher_is_better                 # source: deterministic_transformation + biology
+  rank_label_rule: "rank_label = fitness; fitness = pre-computed -log10(K_D[nM])"  # source: raw (pre-computed column)
+  group_id_rule: "rosace2023automated/<table_id>/TNFa/neg_log10_kd_nM/experimental"  # source: repository_convention
+  missing_value_handling: "null light allowed; non-finite -> rank_label null"
+  keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+  drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+
+tables:
+  - {table_id: kd_adalimumab, raw_file: data/binding/rosace2023automated_kd_adalimumab.csv, expected_output_count: 14}  # source: raw
+  - {table_id: kd_golimumab,  raw_file: data/binding/rosace2023automated_kd_golimumab.csv,  expected_output_count: 5}   # source: raw
+
+caveats:
+  - "nM-based metric unit (offset +9 vs M-based igdesign/unlocking); within-group ranking unaffected."  # source: repository_convention

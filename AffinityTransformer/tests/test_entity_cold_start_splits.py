@@ -153,7 +153,7 @@ def test_antibody_cold_start_measurement_family_merges_antibody_clusters():
     assert len(all_outputs) == len(records)
 
 
-def test_antigen_cold_start_keeps_only_train_seen_antibodies_for_evaluation():
+def test_antigen_cold_start_default_keeps_all_held_out_antigen_records():
     records = _antigen_cold_records()
     result = build_antigen_cold_start_split(
         records,
@@ -169,6 +169,32 @@ def test_antigen_cold_start_keeps_only_train_seen_antibodies_for_evaluation():
     assert train_antigens.isdisjoint(valid_antigens)
     assert train_antigens.isdisjoint(test_antigens)
     assert valid_antigens.isdisjoint(test_antigens)
+
+    # Default mode is a global antigen-entity holdout: it no longer drops
+    # held-out records just because their antibody cluster is also unseen.
+    assert result.excluded_records.empty
+    assert any(
+        str(value).startswith("ab-cluster/unique-")
+        for value in result.valid["antibody_cluster_id"]
+    )
+    checks = set(result.leakage_report["check_name"])
+    assert "valid_antibody_seen_in_train" not in checks
+
+    assert build_pairs(result.valid, max_pairs_per_group=100, seed=0).shape[0] > 0
+    assert build_pairs(result.test, max_pairs_per_group=100, seed=0).shape[0] > 0
+
+
+def test_antigen_cold_start_strict_requires_train_seen_antibodies():
+    records = _antigen_cold_records()
+    result = build_antigen_cold_start_split(
+        records,
+        valid_fraction=0.22,
+        test_fraction=0.22,
+        seed=5,
+        min_eval_records=2,
+        strict_known_counterpart=True,
+    )
+
     train_antibodies = _clusters(result.train, "antibody_cluster_id")
     assert _clusters(result.valid, "antibody_cluster_id") <= train_antibodies
     assert _clusters(result.test, "antibody_cluster_id") <= train_antibodies
@@ -197,9 +223,28 @@ def test_antibody_cold_start_kfolds_isolate_global_antibody_components():
     assert set(validation_cluster_counts.values()) == {1}
 
 
-def test_antigen_cold_start_kfolds_isolate_antigens_and_require_seen_antibodies():
+def test_antigen_cold_start_kfolds_default_isolate_antigens():
     records = _antigen_cold_records()
     folds = build_antigen_cold_start_kfolds(records, n_splits=3, seed=13)
+
+    validation_antigen_counts: dict[str, int] = {}
+    for fold in folds:
+        train_antigens = _clusters(fold.train, "antigen_cluster_id")
+        valid_antigens = _clusters(fold.valid, "antigen_cluster_id")
+        assert train_antigens.isdisjoint(valid_antigens)
+        assert fold.excluded_records.empty
+        checks = set(fold.leakage_report["check_name"])
+        assert "valid_antibody_seen_in_train" not in checks
+        for antigen_id in valid_antigens:
+            validation_antigen_counts[antigen_id] = validation_antigen_counts.get(antigen_id, 0) + 1
+    assert set(validation_antigen_counts.values()) == {1}
+
+
+def test_antigen_cold_start_kfolds_strict_require_seen_antibodies():
+    records = _antigen_cold_records()
+    folds = build_antigen_cold_start_kfolds(
+        records, n_splits=3, seed=13, strict_known_counterpart=True
+    )
 
     validation_antigen_counts: dict[str, int] = {}
     for fold in folds:

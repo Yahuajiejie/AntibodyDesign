@@ -1,0 +1,29 @@
+study_id: shanehsazzadeh2024igdesign
+paper: "Shanehsazzadeh et al., bioRxiv 2023.12.08.570889 (2024); AbSci IgDesign"
+antibody: "therapeutic reference mAb + IgDesign HCDR designs (IgG)"
+label_kind: experimental          # source: paper (SPR K_D)
+common_rules:
+  row_expansion: "one record per raw row (Positive Control + designed variants)"  # source: repository_convention
+  antibody_fields:
+    heavy_chain: "raw 'heavy' (VH)"; light_chain: "raw 'light' (VL)"; antibody_type: IgG  # source: raw + paper
+  metric_name: neg_log10_kd_M
+  metric_unit: "-log10(KD/M)"
+  metric_direction: higher_is_better                 # source: deterministic_transformation
+  rank_label_rule: "rank_label = -log10(fitness * 1e-9); fitness = K_D in nM"  # source: paper (nM) + deterministic_transformation
+  antigen_source: retrieved                          # source: official_database (target verified; construct per UniProt note)
+  group_id_rule: "shanehsazzadeh2024igdesign/<table_id>/<antigen_key>/neg_log10_kd_M/experimental"  # source: repository_convention
+  missing_value_handling: "null light allowed; non-finite -log10 -> rank_label null"
+  keep_for_training: "true unless heavy missing/invalid OR rank_label non-finite"
+  drop_reason: "missing_or_invalid_heavy_chain | missing_rank_label"
+
+tables:
+  - {table_id: Afasevikumab-IL17A_kd,  antigen_key: IL17A,   antigen: "Q16552 mature aa24-155 (verified)", expected_output_count: 13}
+  - {table_id: Bimagrumab-ACVR2B_kd,   antigen_key: ACVR2B,  antigen: "Q13705 ECD aa19-137",               expected_output_count: 24}
+  - {table_id: Eculizumab-C5_kd,       antigen_key: C5,      antigen: "P01031 full-length aa1-1676",       expected_output_count: 34}
+  - {table_id: Osocimab-FXI_kd,        antigen_key: FXI,     antigen: "P03951 mature aa19-625",            expected_output_count: 47}
+  - {table_id: Spesolimab-IL36R_kd,    antigen_key: IL36R,   antigen: "Q9HB29 ECD aa20-335 (accession corrected from Q9Y5U5)", expected_output_count: 40}
+  - {table_id: Tezepelumab-TSLP_kd,    antigen_key: TSLP,    antigen: "Q969D9 mature aa29-159",            expected_output_count: 127}
+  - {table_id: Utomilumab-TNFRSF9_kd,  antigen_key: TNFRSF9, antigen: "Q07011 CRD2-CRD4 aa24-186",         expected_output_count: 36}
+
+unresolved:
+  - "Antigen construct boundaries hard-coded; only IL17A verified exact this pass (others per UniProt note)."  # source: unresolved
