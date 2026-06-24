@@ -85,8 +85,8 @@ G00 需要确认：
 
 ```bash
 python train.py \
-  --config configs/experiments/g01_maxctx_cross_attention.yaml \
-  --output-dir outputs/g01_maxctx_cross_attention
+  --config configs/group_holdout/architecture_cross_attention_l4.yaml \
+  --output-dir outputs/group_holdout_architecture_cross_attention_l4
 ```
 
 `train.py` 做的事情：
@@ -126,29 +126,23 @@ test_group_metrics.csv
 
 ## 5. 批量实验
 
-当前实验按组号组织：
+当前正式 group-holdout 对照按一个冻结配置矩阵组织：
 
 ```text
-g01: 主模型消融，antibody_only / concat_antigen / cross_attention
-g02: label source 消融，experimental / no_predicted / all_label_kinds
-g03: pair sampling 强度消融
-g04: antigen subset 消融
+architecture_*: 架构对照，concat / cross-attention depth 4/8/16
+sampler_*: 采样策略对照，固定 depth 4，只改变 pair sampler
 ```
 
-本地顺序跑某组：
+本地顺序跑正式对照：
 
 ```bash
-GROUP_SCRIPT=scripts/runs/g01_core_ablation.sh \
-bash scripts/runs/g01_core_ablation.sh
+bash scripts/runs/group_holdout_formal_controls.sh
 ```
 
-更推荐直接运行组脚本：
+正式配置目录：
 
-```bash
-bash scripts/runs/g01_core_ablation.sh
-bash scripts/runs/g02_label_source_ablation.sh
-bash scripts/runs/g03_pair_sampling_ablation.sh
-bash scripts/runs/g04_antigen_subset_ablation.sh
+```text
+configs/group_holdout/
 ```
 
 收集结果：
@@ -173,23 +167,21 @@ sbatch scripts/slurm/warmup_esm2_cache.sbatch
 ```bash
 sbatch \
   --job-name=aff-g01-cross \
-  --export=ALL,CONFIG=configs/experiments/g01_maxctx_cross_attention.yaml \
+  --export=ALL,CONFIG=configs/group_holdout/architecture_cross_attention_l4.yaml \
   scripts/slurm/run_config.sbatch
 ```
 
-跑一组实验：
+跑正式 group-holdout 链：
 
 ```bash
-sbatch \
-  --job-name=aff-g01-core \
-  --export=ALL,GROUP_SCRIPT=scripts/runs/g01_core_ablation.sh \
-  scripts/slurm/run_group.sbatch
+bash scripts/slurm/download_group_holdout_models_login.sh
+bash scripts/slurm/submit_group_holdout_training_chain.sh
 ```
 
 依赖链提交：
 
 ```bash
-bash scripts/slurm/submit_g00_g01_chain.sh
+bash scripts/slurm/submit_group_holdout_training_chain.sh
 ```
 
 规则：

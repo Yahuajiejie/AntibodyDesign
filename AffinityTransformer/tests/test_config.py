@@ -81,7 +81,7 @@ def test_load_config_valid(tmp_path, existing_train_path):
     assert config.cross_validation.enabled is False
 
 
-def test_load_config_parses_v065_cached_concat_model(tmp_path, existing_train_path):
+def test_load_config_parses_group_holdout_cached_concat_model(tmp_path, existing_train_path):
     antibody_cache = tmp_path / "ab-cache"
     antigen_cache = tmp_path / "ag-cache"
     antibody_cache.mkdir()

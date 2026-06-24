@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and validate formal v0.65 IgBERT/ESM-2 embedding caches.
+"""Build and validate formal group-holdout IgBERT/ESM-2 embedding caches.
 
 This command never creates or modifies experiment YAML files.  Training
 configuration is human-owned under ``configs/``.
@@ -113,7 +113,8 @@ def main() -> None:
 def _load_revisions(path: Path) -> dict[str, dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(
-            f"model revision file not found: {path}; run download_v065_models_login.sh first"
+            "model revision file not found: "
+            f"{path}; run download_group_holdout_models_login.sh first"
         )
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):

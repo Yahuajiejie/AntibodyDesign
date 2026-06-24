@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run on the login node before submit_v065_training_chain.sh.
+# Run on the login node before submit_group_holdout_training_chain.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,7 +11,7 @@ affinity_activate_conda
 
 export TRANSFORMERS_OFFLINE=0
 export HF_DATASETS_OFFLINE=0
-REVISION_FILE="${REVISION_FILE:-cache/model_revisions_v065.yaml}"
+REVISION_FILE="${REVISION_FILE:-cache/model_revisions_group_holdout.yaml}"
 mkdir -p "$(dirname "${REVISION_FILE}")"
 
 echo "HF_HOME=${HF_HOME}"
@@ -50,5 +50,5 @@ for role, repo in models.items():
 path = Path(os.environ["REVISION_FILE"])
 path.write_text(yaml.safe_dump(result, sort_keys=False), encoding="utf-8")
 print(path.read_text(encoding="utf-8"))
-print("v0.65 model download complete")
+print("group-holdout model download complete")
 PY

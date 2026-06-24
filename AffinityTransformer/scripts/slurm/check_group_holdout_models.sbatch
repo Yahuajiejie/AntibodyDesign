@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=aff-v065-models
+#SBATCH --job-name=aff-gh-models
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.err
 #SBATCH --partition=C64M256G
@@ -15,9 +15,9 @@ LOAD_CUDA=0
 source scripts/slurm/activate_affitest.sh
 affinity_check_cpu_runtime
 
-REVISION_FILE="${REVISION_FILE:-cache/model_revisions_v065.yaml}"
+REVISION_FILE="${REVISION_FILE:-cache/model_revisions_group_holdout.yaml}"
 if [[ ! -f "${REVISION_FILE}" ]]; then
-  echo "[FATAL] Missing ${REVISION_FILE}. Run scripts/slurm/download_v065_models_login.sh first." >&2
+  echo "[FATAL] Missing ${REVISION_FILE}. Run scripts/slurm/download_group_holdout_models_login.sh first." >&2
   exit 8
 fi
 
@@ -43,5 +43,5 @@ for role in ("antibody", "antigen"):
     )
     del model
     gc.collect()
-print("v0.65 model cache check complete")
+print("group-holdout model cache check complete")
 PY

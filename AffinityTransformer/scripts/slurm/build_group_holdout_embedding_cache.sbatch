@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=aff-v065-cache
+#SBATCH --job-name=aff-gh-cache
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.err
 #SBATCH --partition=GPUA800
@@ -17,9 +17,9 @@ source scripts/slurm/activate_affitest.sh
 affinity_check_gpu_runtime
 
 SPLIT_DIR="${SPLIT_DIR:-processed/binding/splits/g00_max_antigen_context}"
-REVISION_FILE="${REVISION_FILE:-cache/model_revisions_v065.yaml}"
-CACHE_ROOT="${CACHE_ROOT:-processed/embeddings/v065}"
-python scripts/embeddings/build_v065_cache.py \
+REVISION_FILE="${REVISION_FILE:-cache/model_revisions_group_holdout.yaml}"
+CACHE_ROOT="${CACHE_ROOT:-processed/embeddings/group_holdout}"
+python scripts/embeddings/build_group_holdout_cache.py \
   --split-dir "${SPLIT_DIR}" \
   --revision-file "${REVISION_FILE}" \
   --cache-root "${CACHE_ROOT}" \

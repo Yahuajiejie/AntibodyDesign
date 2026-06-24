@@ -2,7 +2,7 @@
 `config.data.record_filter` in explicit-path mode (`split_strategy="none"`).
 
 Before this change, `resolve_data_paths` only applied `record_filter` in
-automatic-split mode -- every `configs/v065/*.yaml` uses explicit paths, so
+automatic-split mode -- every `configs/group_holdout/*.yaml` uses explicit paths, so
 the filter was silently a no-op for them regardless of what `data.filter`
 said. This was found while excluding `label_kind="predicted"` groups
 (ML-model-predicted affinity scores, not real measurements) from the

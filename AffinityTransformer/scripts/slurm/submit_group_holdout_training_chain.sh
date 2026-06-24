@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Submit the frozen-cache Concat / Deep4 / Deep8 / Deep16 training jobs.
+# Submit the formal frozen-cache group-holdout training jobs.
 # All four depend only on the shared embedding cache (no weight transfer or
 # other real dependency between them) and are submitted in parallel.
 set -euo pipefail
@@ -8,24 +8,27 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT}"
 mkdir -p logs/slurm
 
-REVISION_FILE="${REVISION_FILE:-cache/model_revisions_v065.yaml}"
+REVISION_FILE="${REVISION_FILE:-cache/model_revisions_group_holdout.yaml}"
 SPLIT_DIR="${SPLIT_DIR:-processed/binding/splits/g00_max_antigen_context}"
-CACHE_ROOT="${CACHE_ROOT:-processed/embeddings/v065}"
-CONFIG_DIR="${CONFIG_DIR:-configs/v065}"
+CACHE_ROOT="${CACHE_ROOT:-processed/embeddings/group_holdout}"
+CONFIG_DIR="${CONFIG_DIR:-configs/group_holdout}"
 RUN_TAG="${RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/slurm/v065-${RUN_TAG}}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/slurm/group_holdout-${RUN_TAG}}"
 
 if [[ ! -f "${REVISION_FILE}" ]]; then
   echo "[FATAL] Missing ${REVISION_FILE}." >&2
-  echo "Run: bash scripts/slurm/download_v065_models_login.sh" >&2
+  echo "Run: bash scripts/slurm/download_group_holdout_models_login.sh" >&2
   exit 2
 fi
 
 for config in \
-  "${CONFIG_DIR}/v065_concat_ranknet.yaml" \
-  "${CONFIG_DIR}/v065_deep4_ranknet.yaml" \
-  "${CONFIG_DIR}/v065_deep8_ranknet.yaml" \
-  "${CONFIG_DIR}/v065_deep16_ranknet.yaml"; do
+  "${CONFIG_DIR}/architecture_concat.yaml" \
+  "${CONFIG_DIR}/architecture_cross_attention_l4.yaml" \
+  "${CONFIG_DIR}/architecture_cross_attention_l8.yaml" \
+  "${CONFIG_DIR}/architecture_cross_attention_l16.yaml" \
+  "${CONFIG_DIR}/sampler_balanced_tree_l4.yaml" \
+  "${CONFIG_DIR}/sampler_randomized_bst_l4.yaml" \
+  "${CONFIG_DIR}/sampler_noise_aware_multiscale_l4.yaml"; do
   if [[ ! -f "${config}" ]]; then
     echo "[FATAL] Missing human-owned training config: ${config}" >&2
     exit 3
@@ -52,7 +55,7 @@ echo "submitted code smoke: ${smoke}"
 
 models="$(sbatch --parsable \
   --export="ALL,REVISION_FILE=${REVISION_FILE}" \
-  scripts/slurm/check_v065_models.sbatch)"
+  scripts/slurm/check_group_holdout_models.sbatch)"
 echo "submitted model cache check: ${models}"
 
 if [[ "${SKIP_G00:-0}" == "1" ]]; then
@@ -69,7 +72,7 @@ fi
 cache="$(sbatch --parsable \
   --dependency="afterok:${g00_dependency}:${models}" \
   --export="ALL,SPLIT_DIR=${SPLIT_DIR},REVISION_FILE=${REVISION_FILE},CACHE_ROOT=${CACHE_ROOT}" \
-  scripts/slurm/build_v065_embedding_cache.sbatch)"
+  scripts/slurm/build_group_holdout_embedding_cache.sbatch)"
 echo "submitted formal embedding cache: ${cache}"
 
 submit_training() {
@@ -79,7 +82,7 @@ submit_training() {
   local output_dir="${OUTPUT_ROOT}/${name}"
   sbatch --parsable \
     --dependency="afterok:${dependency}" \
-    --job-name="aff-v065-${name}" \
+    --job-name="aff-gh-${name}" \
     --time="${TRAIN_TIME_LIMIT:-72:00:00}" \
     --mem="${TRAIN_MEMORY:-96G}" \
     --export="ALL,CONFIG=${config},OUTPUT_DIR=${output_dir}" \
@@ -90,24 +93,33 @@ if [[ "${SKIP_CONCAT:-0}" == "1" ]]; then
   concat="skipped"
   echo "skipping concat (SKIP_CONCAT=1)"
 else
-  concat="$(submit_training concat "${CONFIG_DIR}/v065_concat_ranknet.yaml" "${cache}")"
+  concat="$(submit_training concat "${CONFIG_DIR}/architecture_concat.yaml" "${cache}")"
   echo "submitted concat after cache: ${concat}"
 fi
 
 # deep4/deep8/deep16 each depend only on the shared cache, not on each
 # other or on concat (no weight transfer between them) -- submitted in
 # parallel rather than serialized.
-deep4="$(submit_training deep4 "${CONFIG_DIR}/v065_deep4_ranknet.yaml" "${cache}")"
+deep4="$(submit_training deep4 "${CONFIG_DIR}/architecture_cross_attention_l4.yaml" "${cache}")"
 echo "submitted deep4 after cache: ${deep4}"
 
-deep8="$(submit_training deep8 "${CONFIG_DIR}/v065_deep8_ranknet.yaml" "${cache}")"
+deep8="$(submit_training deep8 "${CONFIG_DIR}/architecture_cross_attention_l8.yaml" "${cache}")"
 echo "submitted deep8 after cache: ${deep8}"
 
-deep16="$(submit_training deep16 "${CONFIG_DIR}/v065_deep16_ranknet.yaml" "${cache}")"
+deep16="$(submit_training deep16 "${CONFIG_DIR}/architecture_cross_attention_l16.yaml" "${cache}")"
 echo "submitted deep16 after cache: ${deep16}"
 
+balanced="$(submit_training balanced "${CONFIG_DIR}/sampler_balanced_tree_l4.yaml" "${cache}")"
+echo "submitted balanced tree after cache: ${balanced}"
+
+randomized="$(submit_training randomized "${CONFIG_DIR}/sampler_randomized_bst_l4.yaml" "${cache}")"
+echo "submitted randomized BST after cache: ${randomized}"
+
+noise="$(submit_training noise "${CONFIG_DIR}/sampler_noise_aware_multiscale_l4.yaml" "${cache}")"
+echo "submitted noise-aware multiscale after cache: ${noise}"
+
 echo ""
-echo "v0.65 chain submitted"
+echo "group-holdout chain submitted"
 echo "  setup=login-node (synchronous)"
 echo "  smoke=${smoke}"
 echo "  models=${models}"
@@ -116,4 +128,7 @@ echo "  concat=${concat}"
 echo "  deep4=${deep4}"
 echo "  deep8=${deep8}"
 echo "  deep16=${deep16}"
+echo "  balanced=${balanced}"
+echo "  randomized=${randomized}"
+echo "  noise=${noise}"
 echo "  outputs=${OUTPUT_ROOT}"

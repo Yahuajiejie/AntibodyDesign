@@ -15,6 +15,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from affinity_transformer.dataset import load_records  # noqa: E402
+from affinity_transformer.dataset.schema import REQUIRED_COLUMNS  # noqa: E402
+
+
+_NUMERIC_COLUMNS = ("source_row", "metric_value_numeric", "rank_label")
+_BOOLEAN_COLUMNS = ("keep_for_training",)
+_TEXT_COLUMNS = tuple(
+    column
+    for column in REQUIRED_COLUMNS
+    if column not in {*_NUMERIC_COLUMNS, *_BOOLEAN_COLUMNS}
+)
 
 
 def merge_binding_records(
@@ -63,7 +73,7 @@ def merge_binding_records(
         study_id = str(getattr(row, "study_id"))
         table_id = str(getattr(row, "table_id"))
         records_path = _records_path(processed_root, study_id, table_id)
-        records = load_records(records_path)
+        records = _normalize_records_for_merge(load_records(records_path))
 
         expected_dataset_id = f"{study_id}/{table_id}"
         if "dataset_id" in records and not set(records["dataset_id"].astype(str)) <= {expected_dataset_id}:
@@ -87,6 +97,26 @@ def merge_binding_records(
         summary_path, index=False
     )
     return merged
+
+
+def _normalize_records_for_merge(records: pd.DataFrame) -> pd.DataFrame:
+    """Normalize standard columns to stable dtypes before merged parquet write.
+
+    Dataset converters preserve raw cells with their local pandas-inferred
+    types. After concatenation, columns such as ``metric_value_raw`` can hold a
+    mix of strings, ints, and floats, which pyarrow rejects when writing the
+    merged table. The training table needs deterministic storage types, so the
+    merge stage coerces text-like schema fields to nullable strings, numeric
+    fields to numeric dtypes, and booleans through the standard strict parser.
+    """
+    normalized = records.copy()
+    for column in _TEXT_COLUMNS:
+        normalized[column] = normalized[column].astype("string")
+    for column in _NUMERIC_COLUMNS:
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+    for column in _BOOLEAN_COLUMNS:
+        normalized[column] = normalized[column].apply(_parse_bool).astype(bool)
+    return normalized
 
 
 def _records_path(processed_root: Path, study_id: str, table_id: str) -> Path:

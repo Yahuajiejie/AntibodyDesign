@@ -1,0 +1,63 @@
+data:
+  all_records_path: null
+  train_path: processed/binding/splits/g00_max_antigen_context/train.parquet
+  valid_path: processed/binding/splits/g00_max_antigen_context/valid.parquet
+  test_path: processed/binding/splits/g00_max_antigen_context/test.parquet
+  split_strategy: none
+  split_dir: null
+  valid_fraction: 0.1
+  test_fraction: 0.1
+  max_pairs_per_group: 2000
+  pair_sample_strategy: capped_proportional
+  pair_fraction: 0.01
+  min_pairs_per_group: 200
+  weight_pairs_by_group_size: true
+  seed: 0
+
+model:
+  antibody_encoder:
+    name: Exscientia/IgBert
+    revision: 81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    tokenizer_revision: 81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    mode: frozen_cached
+    embedding_layer: -1
+    cache_dir: processed/embeddings/group_holdout/igbert/81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    max_length: 256
+    long_sequence_strategy: truncate
+  antigen_encoder:
+    name: facebook/esm2_t12_35M_UR50D
+    revision: 6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    tokenizer_revision: 6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    mode: frozen_cached
+    embedding_layer: -1
+    cache_dir: processed/embeddings/group_holdout/esm2/6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    max_length: 512
+    long_sequence_strategy: truncate
+  interaction:
+    kind: deep_cross_attention
+    d_model: 256
+    num_layers: 8
+    num_heads: 8
+    ffn_multiplier: 4.0
+    dropout: 0.1
+    pooling: masked_mean
+    bidirectional: true
+  objective:
+    name: pairwise_ranknet
+    temperature: 1.0
+    sigma: 1.0
+    pointwise_loss: huber
+
+train:
+  batch_size: 128
+  lr: 1.0e-4
+  epochs: 10
+  device: cuda
+  num_workers: 4
+  pin_memory: true
+
+cross_validation:
+  enabled: false
+  n_splits: 5
+  source: train_valid
+  seed: 0
