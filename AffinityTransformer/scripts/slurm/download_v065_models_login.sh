@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run on the login node before submit_v065_training_chain.sh.
+# Run on the login node before submit_group_holdout_*.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
