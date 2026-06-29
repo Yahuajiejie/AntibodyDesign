@@ -1,0 +1,28 @@
+data:
+  all_records_path: null
+  train_path: processed/binding/splits/g02_experimental_only/train.parquet
+  valid_path: processed/binding/splits/g02_experimental_only/valid.parquet
+  test_path: processed/binding/splits/g02_experimental_only/test.parquet
+  split_strategy: none
+  split_dir: null
+  valid_fraction: 0.1
+  test_fraction: 0.1
+  max_pairs_per_group: 200
+  pair_sample_strategy: absolute_cap
+  pair_fraction: null
+  min_pairs_per_group: 1
+  seed: 0
+
+model:
+  antibody_encoder: esm2_t12_35M
+  antigen_encoder: null
+  d_model: 480
+  use_cross_attention: false
+
+train:
+  batch_size: 2048
+  lr: 1.0e-4
+  epochs: 10
+  device: cuda
+  num_workers: 4
+  pin_memory: true

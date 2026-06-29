@@ -1,0 +1,25 @@
+data:
+  all_records_path: processed/binding/all_records.parquet
+  train_path: null
+  valid_path: null
+  test_path: null
+  split_strategy: group_holdout_split
+  split_dir: processed/binding/splits/group_holdout_split
+  valid_fraction: 0.1
+  test_fraction: 0.1
+  max_pairs_per_group: 50
+  seed: 0
+
+model:
+  antibody_encoder: esm2_t12_35M
+  antigen_encoder: esm2_t12_35M
+  d_model: 480
+  use_cross_attention: true
+
+train:
+  batch_size: 2048
+  lr: 1.0e-4
+  epochs: 10
+  device: cuda
+  num_workers: 4
+  pin_memory: true

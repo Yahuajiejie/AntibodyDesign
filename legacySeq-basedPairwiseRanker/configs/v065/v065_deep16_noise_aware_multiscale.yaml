@@ -1,0 +1,89 @@
+data:
+  all_records_path: null
+  train_path: processed/binding/splits/g00_max_antigen_context/train.parquet
+  valid_path: processed/binding/splits/g00_max_antigen_context/valid.parquet
+  test_path: processed/binding/splits/g00_max_antigen_context/test.parquet
+  split_strategy: none
+  split_dir: null
+  valid_fraction: 0.1
+  test_fraction: 0.1
+  # noise_aware_multiscale replaces literal-index-adjacency comparisons with a
+  # tau-separated-anchor backbone + degree-balanced near/medium/far coverage
+  # and enrichment edges (see noise_aware_multiscale.py's module docstring).
+  # Every emitted pair has a label gap >= that group's tau, looked up per
+  # antigen_key from tau_registry.py (docs/experiments/tau_registry.md) --
+  # not a project-wide constant. max_pairs_per_group/pair_fraction/
+  # min_pairs_per_group below are required by config.py's dataclass but
+  # ignored by this strategy.
+  max_pairs_per_group: 2000
+  pair_sample_strategy: noise_aware_multiscale
+  pair_fraction: 0.01
+  min_pairs_per_group: 200
+  noise_aware_extra_edges_per_record: 2
+  noise_aware_max_degree: 12
+  noise_aware_candidate_probe_count: 8
+  noise_aware_add_anchor_redundancy: false
+  noise_aware_default_tau: 0.2
+  noise_aware_unresolved_policy: skip
+  weight_pairs_by_group_size: false
+  seed: 0
+  # engelhart2022dataset/scFv-SARS-CoV-2_affinity (352,139 records) and
+  # li2023machine/affinity1+affinity2 (747,501 records, combined) are all
+  # ML-model-predicted affinity scores for designed-but-never-measured
+  # antibodies (label_kind=predicted, metric_unit="predicted score
+  # (dimensionless)") -- not real lab measurements, and not on the same
+  # scale as the neg_log10_kd_M values tau_registry.py was researched
+  # against. Excluded rather than guessing a tau for them; see the
+  # conversation around 2026-06-22 for how this was found (a 332,800-pair
+  # contiguous stretch of this exact group is what was pinning the concat
+  # model's loss near ln(2)).
+  filter:
+    exclude_label_kinds: [predicted]
+
+model:
+  antibody_encoder:
+    name: Exscientia/IgBert
+    revision: 81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    tokenizer_revision: 81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    mode: frozen_cached
+    embedding_layer: -1
+    cache_dir: processed/embeddings/v065/igbert/81a4abb8a4dac5cdcbefc28e5b331a82224c485d
+    max_length: 256
+    long_sequence_strategy: truncate
+  antigen_encoder:
+    name: facebook/esm2_t12_35M_UR50D
+    revision: 6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    tokenizer_revision: 6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    mode: frozen_cached
+    embedding_layer: -1
+    cache_dir: processed/embeddings/v065/esm2/6fbf070e65b0b7291e7bbcd451118c216cff79d8
+    max_length: 512
+    long_sequence_strategy: truncate
+  interaction:
+    kind: deep_cross_attention
+    d_model: 256
+    num_layers: 16
+    num_heads: 8
+    ffn_multiplier: 4.0
+    dropout: 0.1
+    pooling: masked_mean
+    bidirectional: true
+  objective:
+    name: pairwise_ranknet
+    temperature: 1.0
+    sigma: 1.0
+    pointwise_loss: huber
+
+train:
+  batch_size: 128
+  lr: 1.0e-4
+  epochs: 25
+  device: cuda
+  num_workers: 4
+  pin_memory: true
+
+cross_validation:
+  enabled: false
+  n_splits: 5
+  source: train_valid
+  seed: 0

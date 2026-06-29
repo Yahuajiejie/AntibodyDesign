@@ -1,0 +1,6 @@
+filter:
+  exclude_dataset_ids:
+    - AbRank/dataset
+  require_antigen_sequence: true
+  min_trainable_records_per_group: 2
+  min_unique_labels_per_group: 2
